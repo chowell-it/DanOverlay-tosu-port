@@ -2,7 +2,6 @@
 
 ## Disclaimer
 This application is HEAVILY a work in progress. Given dan overlay needed to be reverse engineered to make this work some things need work. Please submit issues, I will try to fix when possible.
-
 This is an unofficial port of [Dan Overlay](https://github.com/acarranzao1a-png/Dan-Overlay) by **acarranzao1a-png** into the [tosu](https://github.com/tosuapp/tosu) counter format. All original overlay assets, scoring data, UI skins, and algorithm data files belong to their respective authors and rights holders. The difficulty rating engine (`tools/msd.exe`) is part of [Etterna/MinaCalc](https://github.com/etternagame/etterna). This port adds only a companion server and targeted edits to wire the overlay into tosu — no original content was created or claimed. Full methodology can be found in the [methodology](https://github.com/chowell-it/dan-overlay-to-tosu/blob/main/methodology.md) file for decompiling, reverse engineering, and porting steps.
 ---
 
