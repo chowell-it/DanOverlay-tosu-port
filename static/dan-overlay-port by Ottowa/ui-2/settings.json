@@ -1,0 +1,15 @@
+[
+  {
+    "uniqueID": "scoringMode",
+    "type": "list",
+    "title": "Scoring mode",
+    "description": "Dan estimation algorithm: Reform, Celestial, Signicial, or Shoegazer.",
+    "options": [
+      { "label": "Reform", "value": "reform" },
+      { "label": "Celestial", "value": "celestial" },
+      { "label": "Signicial", "value": "signicial" },
+      { "label": "Shoegazer", "value": "shoegazer" }
+    ],
+    "value": "reform"
+  }
+]
