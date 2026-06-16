@@ -23,7 +23,6 @@ Runs the Dan Overlay dan tier estimator as a native tosu counter. Displays your 
 
 - [tosu](https://github.com/tosuapp/tosu) v4.x (pre-built binary install)
 - Python 3.10+ installed and on your PATH (the same Python used by the original Dan Overlay works)
-- osu! running with a 4K mania beatmap selected
 
 ---
 
