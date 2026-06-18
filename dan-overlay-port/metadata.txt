@@ -1,6 +1,6 @@
 Usecase: Unoffical Port of Standalone Dan Overlay to tosu! Element
 Name: Dan Overlay tosu! Port
 Author: Ottowa
-Version: 1.0.0
+Version: 3.0.0
 Description: Live Dan tier estimation for osu!mania 4K. Shows Reform, Celestial, Signicial, and Shoegazer tier estimates using MinaCalc (msd.exe). Supports all UI skins and scoring modes.
 Overlay: index.html
