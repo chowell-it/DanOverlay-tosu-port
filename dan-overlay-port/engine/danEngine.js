@@ -936,6 +936,9 @@ var DanEngine = (() => {
     }
     return { C, Ks };
   }
+  function calculateText(raw, mod) {
+    return calculateFromParsed(parseOsuText(raw), mod);
+  }
   function calculateFromParsed(parsed, mod) {
     const { x, K, T, noteSeq, noteSeqByColumn } = preprocess(parsed, mod);
     const { all: allCorners, base: baseCorners, A: aCorners } = getCorners(T, noteSeq);
@@ -3678,6 +3681,514 @@ var DanEngine = (() => {
     return { notes, times, n: keys.length };
   }
 
+  // port/config/sr_means_7k.json
+  var sr_means_7k_default = {
+    _metadata: {
+      description: "7K DDMythical original Dan course SR means (practice packs)",
+      keys: 7,
+      tiers: [
+        "0th",
+        "1st",
+        "2nd",
+        "3rd",
+        "4th",
+        "5th",
+        "6th",
+        "7th",
+        "8th",
+        "9th",
+        "10th",
+        "Gamma",
+        "Azimuth",
+        "Zenith",
+        "Stellium"
+      ],
+      n_maps_total: 45,
+      calibrated: "2026-06",
+      source: "data/original 7K/ - DDMythical 7K regular dan packs"
+    },
+    general: {
+      "0th": {
+        n: 3,
+        median: 3.7392,
+        mean: 3.7037,
+        min: 3.3056,
+        max: 4.0664
+      },
+      "1st": {
+        n: 3,
+        median: 4.7131,
+        mean: 4.6596,
+        min: 4.2308,
+        max: 5.0348
+      },
+      "2nd": {
+        n: 3,
+        median: 4.9136,
+        mean: 5.1143,
+        min: 4.7514,
+        max: 5.678
+      },
+      "3rd": {
+        n: 3,
+        median: 5.4499,
+        mean: 5.4877,
+        min: 5.1288,
+        max: 5.8844
+      },
+      "4th": {
+        n: 3,
+        median: 5.8615,
+        mean: 5.8614,
+        min: 5.5744,
+        max: 6.1483
+      },
+      "5th": {
+        n: 3,
+        median: 6.0782,
+        mean: 6.1033,
+        min: 5.973,
+        max: 6.2587
+      },
+      "6th": {
+        n: 3,
+        median: 6.4382,
+        mean: 6.5724,
+        min: 6.216,
+        max: 7.0631
+      },
+      "7th": {
+        n: 3,
+        median: 6.9917,
+        mean: 6.9788,
+        min: 6.7263,
+        max: 7.2184
+      },
+      "8th": {
+        n: 3,
+        median: 7.6337,
+        mean: 7.522,
+        min: 7.1528,
+        max: 7.7794
+      },
+      "9th": {
+        n: 3,
+        median: 7.6437,
+        mean: 7.7837,
+        min: 7.4582,
+        max: 8.092
+      },
+      "10th": {
+        n: 3,
+        median: 8.2582,
+        mean: 8.2658,
+        min: 7.9061,
+        max: 8.633
+      },
+      Gamma: {
+        n: 3,
+        median: 8.7916,
+        mean: 8.6916,
+        min: 8.3442,
+        max: 8.9389
+      },
+      Azimuth: {
+        n: 3,
+        median: 9.2473,
+        mean: 9.2493,
+        min: 9.1104,
+        max: 9.3902
+      },
+      Zenith: {
+        n: 3,
+        median: 9.9851,
+        mean: 9.9485,
+        min: 9.8685,
+        max: 9.9918
+      },
+      Stellium: {
+        n: 3,
+        median: 10.568,
+        mean: 10.4853,
+        min: 10.2731,
+        max: 10.6147
+      }
+    },
+    by_skillset: {
+      jack: {},
+      tech: {
+        "0th": {
+          n: 1,
+          median: 3.3056,
+          mean: 3.3056,
+          min: 3.3056,
+          max: 3.3056
+        },
+        "1st": {
+          n: 1,
+          median: 4.2308,
+          mean: 4.2308,
+          min: 4.2308,
+          max: 4.2308
+        },
+        "2nd": {
+          n: 1,
+          median: 4.7514,
+          mean: 4.7514,
+          min: 4.7514,
+          max: 4.7514
+        },
+        "3rd": {
+          n: 1,
+          median: 5.4499,
+          mean: 5.4499,
+          min: 5.4499,
+          max: 5.4499
+        },
+        "4th": {
+          n: 1,
+          median: 6.1483,
+          mean: 6.1483,
+          min: 6.1483,
+          max: 6.1483
+        },
+        "5th": {
+          n: 1,
+          median: 6.0782,
+          mean: 6.0782,
+          min: 6.0782,
+          max: 6.0782
+        },
+        "6th": {
+          n: 1,
+          median: 6.4382,
+          mean: 6.4382,
+          min: 6.4382,
+          max: 6.4382
+        },
+        "7th": {
+          n: 1,
+          median: 6.7263,
+          mean: 6.7263,
+          min: 6.7263,
+          max: 6.7263
+        },
+        "8th": {
+          n: 1,
+          median: 7.1528,
+          mean: 7.1528,
+          min: 7.1528,
+          max: 7.1528
+        },
+        "9th": {
+          n: 1,
+          median: 7.4582,
+          mean: 7.4582,
+          min: 7.4582,
+          max: 7.4582
+        },
+        "10th": {
+          n: 1,
+          median: 7.9061,
+          mean: 7.9061,
+          min: 7.9061,
+          max: 7.9061
+        },
+        Gamma: {
+          n: 1,
+          median: 8.7916,
+          mean: 8.7916,
+          min: 8.7916,
+          max: 8.7916
+        },
+        Azimuth: {
+          n: 1,
+          median: 9.3902,
+          mean: 9.3902,
+          min: 9.3902,
+          max: 9.3902
+        },
+        Zenith: {
+          n: 1,
+          median: 9.8685,
+          mean: 9.8685,
+          min: 9.8685,
+          max: 9.8685
+        },
+        Stellium: {
+          n: 1,
+          median: 10.2731,
+          mean: 10.2731,
+          min: 10.2731,
+          max: 10.2731
+        }
+      },
+      speed: {
+        "0th": {
+          n: 1,
+          median: 4.0664,
+          mean: 4.0664,
+          min: 4.0664,
+          max: 4.0664
+        },
+        "1st": {
+          n: 1,
+          median: 5.0348,
+          mean: 5.0348,
+          min: 5.0348,
+          max: 5.0348
+        },
+        "2nd": {
+          n: 1,
+          median: 5.678,
+          mean: 5.678,
+          min: 5.678,
+          max: 5.678
+        },
+        "3rd": {
+          n: 1,
+          median: 5.8844,
+          mean: 5.8844,
+          min: 5.8844,
+          max: 5.8844
+        },
+        "4th": {
+          n: 1,
+          median: 5.5744,
+          mean: 5.5744,
+          min: 5.5744,
+          max: 5.5744
+        },
+        "5th": {
+          n: 1,
+          median: 5.973,
+          mean: 5.973,
+          min: 5.973,
+          max: 5.973
+        },
+        "6th": {
+          n: 1,
+          median: 6.216,
+          mean: 6.216,
+          min: 6.216,
+          max: 6.216
+        },
+        "7th": {
+          n: 1,
+          median: 6.9917,
+          mean: 6.9917,
+          min: 6.9917,
+          max: 6.9917
+        },
+        "8th": {
+          n: 1,
+          median: 7.7794,
+          mean: 7.7794,
+          min: 7.7794,
+          max: 7.7794
+        },
+        "9th": {
+          n: 1,
+          median: 7.5651,
+          mean: 7.5651,
+          min: 7.5651,
+          max: 7.5651
+        },
+        "10th": {
+          n: 1,
+          median: 8.2582,
+          mean: 8.2582,
+          min: 8.2582,
+          max: 8.2582
+        },
+        Gamma: {
+          n: 1,
+          median: 8.3442,
+          mean: 8.3442,
+          min: 8.3442,
+          max: 8.3442
+        },
+        Azimuth: {
+          n: 1,
+          median: 9.1104,
+          mean: 9.1104,
+          min: 9.1104,
+          max: 9.1104
+        },
+        Zenith: {
+          n: 1,
+          median: 9.9918,
+          mean: 9.9918,
+          min: 9.9918,
+          max: 9.9918
+        },
+        Stellium: {
+          n: 1,
+          median: 10.568,
+          mean: 10.568,
+          min: 10.568,
+          max: 10.568
+        }
+      },
+      stream: {
+        "0th": {
+          n: 1,
+          median: 3.7392,
+          mean: 3.7392,
+          min: 3.7392,
+          max: 3.7392
+        },
+        "1st": {
+          n: 1,
+          median: 4.7131,
+          mean: 4.7131,
+          min: 4.7131,
+          max: 4.7131
+        },
+        "2nd": {
+          n: 1,
+          median: 4.9136,
+          mean: 4.9136,
+          min: 4.9136,
+          max: 4.9136
+        },
+        "3rd": {
+          n: 1,
+          median: 5.1288,
+          mean: 5.1288,
+          min: 5.1288,
+          max: 5.1288
+        },
+        "4th": {
+          n: 1,
+          median: 5.8615,
+          mean: 5.8615,
+          min: 5.8615,
+          max: 5.8615
+        },
+        "5th": {
+          n: 1,
+          median: 6.2587,
+          mean: 6.2587,
+          min: 6.2587,
+          max: 6.2587
+        },
+        "6th": {
+          n: 1,
+          median: 7.0631,
+          mean: 7.0631,
+          min: 7.0631,
+          max: 7.0631
+        },
+        "7th": {
+          n: 1,
+          median: 7.2184,
+          mean: 7.2184,
+          min: 7.2184,
+          max: 7.2184
+        },
+        "8th": {
+          n: 1,
+          median: 7.6337,
+          mean: 7.6337,
+          min: 7.6337,
+          max: 7.6337
+        },
+        "9th": {
+          n: 1,
+          median: 8.092,
+          mean: 8.092,
+          min: 8.092,
+          max: 8.092
+        },
+        "10th": {
+          n: 1,
+          median: 8.633,
+          mean: 8.633,
+          min: 8.633,
+          max: 8.633
+        },
+        Gamma: {
+          n: 1,
+          median: 8.9389,
+          mean: 8.9389,
+          min: 8.9389,
+          max: 8.9389
+        },
+        Azimuth: {
+          n: 1,
+          median: 9.2473,
+          mean: 9.2473,
+          min: 9.2473,
+          max: 9.2473
+        },
+        Zenith: {
+          n: 1,
+          median: 9.9851,
+          mean: 9.9851,
+          min: 9.9851,
+          max: 9.9851
+        },
+        Stellium: {
+          n: 1,
+          median: 10.6147,
+          mean: 10.6147,
+          min: 10.6147,
+          max: 10.6147
+        }
+      },
+      stamina: {}
+    }
+  };
+
+  // port/src/sevenK.ts
+  var GENERAL2 = sr_means_7k_default.general;
+  var BASE_DP = {
+    "0th": 0,
+    "1st": 1,
+    "2nd": 2,
+    "3rd": 3,
+    "4th": 4,
+    "5th": 5,
+    "6th": 6,
+    "7th": 7,
+    "8th": 8,
+    "9th": 9,
+    "10th": 10,
+    Gamma: 11,
+    Azimuth: 12,
+    Zenith: 13,
+    Stellium: 14
+  };
+  var DAN_TIERS = ["0th", "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th", "10th"];
+  var round9 = (v, d) => isFinite(v) ? Number(v.toFixed(d)) : v;
+  function sevenK(sr) {
+    let bestTier = null;
+    let minDist = Infinity;
+    for (const [tier, data] of Object.entries(GENERAL2)) {
+      if (!data || typeof data !== "object" || data.median == null) continue;
+      const dist = Math.abs(sr - Number(data.median));
+      if (dist < minDist) {
+        minDist = dist;
+        bestTier = tier;
+      }
+    }
+    if (bestTier === null) bestTier = "Gamma";
+    const td = GENERAL2[bestTier];
+    const tMin = Number(td.min), tMax = Number(td.max);
+    const pos = tMax > tMin ? (sr - tMin) / (tMax - tMin) : 0.5;
+    let sub = pos < 0.2 ? "Low" : pos < 0.4 ? "Mid-Low" : pos < 0.6 ? "Mid" : pos < 0.8 ? "Mid-High" : "High";
+    const baseDp = BASE_DP[bestTier] ?? 0;
+    const dp7k = round9(baseDp + pos * 0.99, 2);
+    let tier7k = bestTier;
+    if (DAN_TIERS.includes(bestTier)) tier7k = bestTier + " Dan";
+    if (bestTier === "Stellium" && pos > 1) {
+      tier7k = "Beyond Stellium";
+      sub = "Beyond";
+    }
+    return { mode: "7k", tier_7k: tier7k, sublevel_7k: sub, dp_7k: dp7k, sr: round9(sr, 2) };
+  }
+
   // port/browser/danEngine.ts
   function computeMsd(osuText, mod) {
     const mc = globalThis.__MINACALC;
@@ -3693,6 +4204,29 @@ var DanEngine = (() => {
     };
   }
   function analyze(osuText, mod = "NM", osuSr = 0) {
+    const domain = validateDomain(parsearOsuV2Text(osuText, true));
+    if (!domain.valid) return { type: "analysis", error: domain.rejection_reason ?? "domain_rejected" };
+    if (domain.is_7k) {
+      const sr = calculateText(osuText, mod === "NC" ? "DT" : mod).sr;
+      const k = sevenK(sr);
+      return {
+        type: "analysis",
+        ...k,
+        bpm: domain.bpm,
+        od: domain.od,
+        duration_s: domain.drain_time_s,
+        note_count: domain.note_count,
+        mod: mod === "NM" ? "" : mod,
+        mod_label: mod,
+        overall_msd: 0,
+        skillsets: null,
+        celestial: null,
+        signicial: null,
+        shoegazer: null,
+        ln_course: null,
+        osu_sr: osuSr || 0
+      };
+    }
     const r = analyzeReformText(osuText, mod);
     if (r.error) return { type: "analysis", error: r.error };
     const msd = computeMsd(osuText, mod);
