@@ -1,116 +1,72 @@
 # Dan Overlay — tosu Port
 
+Live osu!mania **dan tier estimation** as a standalone [tosu](https://github.com/tosuapp/tosu) counter. Shows your estimated dan tier in real time as you browse maps in osu! — **4K** (Reform, Celestial, Signicial, Shoegazer, LN Course) and **7K**.
+
+Drag-and-drop. **No companion server, no Python, no edits to `tosu.exe`** — everything runs in the counter (in-browser).
+
 ## Disclaimer
 
-This is an unofficial port of [Dan Overlay](https://github.com/acarranzao1a-png/Dan-Overlay) by **acarranzao1a-png** into the [tosu](https://github.com/tosuapp/tosu) counter format. All original overlay assets, scoring data, UI skins, and algorithm data files belong to their respective authors and rights holders. The difficulty rating engine (`tools/msd.exe`) is part of [Etterna/MinaCalc](https://github.com/etternagame/etterna). This port adds only a companion server and targeted edits to wire the overlay into tosu — no original content was created or claimed.
-
----
-
-## Purpose
-
-Runs the Dan Overlay dan tier estimator as a native tosu counter. Displays your estimated Reform / Celestial / Signicial / Shoegazer dan tier in real time as you browse maps in osu!. Reads the currently selected beatmap through tosu's `/json` API, calculates MinaCalc MSD skillset scores via a local companion server, and feeds the result into the original overlay UI.
-
-**What this port adds:**
-- `dan-overlay-server.py` — Python companion server (port 24051) that handles all analysis
-- `start-dan-overlay-server.bat` — launcher for the companion server
-- Targeted edits to `overlay.js` to fetch from the companion server instead of the original Python bridge
-- `settings.json` in each UI skin folder for scoringMode selection in tosu
-- LN% badge that appears inline with the scoring mode badge when a map has ≥ 30% hold notes
-
----
-
-## Requirements
-
-- [tosu](https://github.com/tosuapp/tosu) v4.x (pre-built binary install)
-- Python 3.10+ installed and on your PATH (the same Python used by the original Dan Overlay works)
-- osu! running with a 4K mania beatmap selected
-
----
+Unofficial port of [Dan Overlay](https://github.com/acarranzao1a-png/Dan-Overlay) by **acarranzao1a-png** into the tosu counter format. All original overlay assets, scoring data, UI skins, and calibration files belong to their respective authors and rights holders. The difficulty engine is [Etterna/MinaCalc](https://github.com/etternagame/etterna) (compiled to WebAssembly here). This port only re-implements the analysis pipeline in TypeScript and wires the overlay into tosu — no original content is claimed.
 
 ## Install
 
-1. Copy the entire `static/dan-overlay/` folder into your tosu `static/` directory:
+1. Copy the `dan-overlay-port/` folder into your tosu `static/` directory:
    ```
-   static/dan-overlay/  →  <tosu root>/static/dan-overlay/
+   dan-overlay-port/  →  <tosu root>/static/dan-overlay-port/
    ```
+2. In tosu's counter manager (`http://localhost:24050`) it appears as **"Dan Overlay tosu! Port"** — add it as an in-game overlay, or open `http://localhost:24050/dan-overlay-port/` directly.
 
-2. Copy `start-dan-overlay-server.bat` into your tosu root directory:
-   ```
-   start-dan-overlay-server.bat  →  <tosu root>/start-dan-overlay-server.bat
-   ```
+That's it. No process to run, no install step.
 
-Your tosu folder should look like:
-```
-tosu-windows-v4.x.x/
-├── tosu.exe
-├── start-dan-overlay-server.bat      ← new
-└── static/
-    └── dan-overlay/                  ← new
-        ├── overlay.js
-        ├── dan-overlay-server.py
-        ├── config/
-        ├── tools/
-        │   └── msd.exe
-        ├── ui-2/
-        ├── ui-3/
-        ├── ui-4/
-        ├── ui-5/
-        └── ui-6/
-```
+**Requirements:** tosu v4.x and osu! running with a mania map selected. The counter's browser/webview needs WebAssembly SIMD (tosu's webview and any modern browser qualify).
 
----
+## How it works
 
-## Running
+On every map change the counter reads the current beatmap from tosu (`/json` for state, `/files/beatmap/file` for the `.osu`) and runs the full analysis locally:
 
-1. Start tosu normally.
-2. Double-click `start-dan-overlay-server.bat` in your tosu root. Keep that console window open — closing it stops analysis.
-3. In the tosu counter manager (`http://localhost:24050`), open one of the **ui-2** through **ui-6** counters and add it to your OBS/stream scene.
-4. Select a 4K mania map in osu!. The overlay will show **COMPUTING** briefly then display the estimated dan tier.
+- A 1:1 TypeScript port of Dan Overlay's **Sunny SR engine**, family classifier, rank engine, and the Celestial / Signicial / Shoegazer / LN Course estimators.
+- **MinaCalc MSD** skillsets via WebAssembly (MinaCalc compiled from `minacalc-rs` 0.2.2 — the same calc the original `msd.exe` uses; output is identical).
 
-The companion server caches results per beatmap MD5 — revisiting a map is instant.
+DT/HT are detected automatically and rate-adjust the rating.
 
----
+## Modes
 
-## Changing Scoring Mode
-
-**Option A — tosu counter manager settings panel:**
-In the tosu UI, select your active skin counter and change the *Scoring mode* dropdown. The counter reloads with the new mode.
-
-**Option B — keyboard shortcut (while the counter is focused in a browser):**
-| Shortcut | Mode |
+| Mode | Notes |
 |---|---|
-| Ctrl+1 | Reform |
-| Ctrl+2 | Celestial |
-| Ctrl+3 | Signicial |
-| Ctrl+4 | Shoegazer |
+| **Reform** | default 4K dan estimate |
+| **Celestial / Signicial / Shoegazer** | alternative 4K dan scales |
+| **LN Course** | auto-activates on LN-heavy maps (LN ratio > 45%) |
+| **7K** | auto-detected; rated on the 7K Dan scale (0th…10th, Gamma, Azimuth, Zenith, Stellium) |
 
-The selected mode persists in `localStorage` across page loads.
+Switch the 4K scoring mode in the counter's settings dropdown, or with **Ctrl+1–4** (Reform / Celestial / Signicial / Shoegazer) while the counter is focused. The choice persists in `localStorage`.
 
----
+The MSD panel shows MinaCalc's 7 skillset values (4K only — MinaCalc doesn't support 7K). On the results screen the overlay shows a clear-quality label by accuracy: **Clear!** (≥96%), **Over Clear!** (≥97%), **Hard Clear!** (≥98%), **Perfect!** (100%).
 
-## Known Issues and Limitations
+## Accuracy
 
-### No LN Course dan estimation
-The LN Course scoring mode from the original app requires a proprietary primary SR engine that is not available outside the original Dan Overlay binary. LN Course cannot be estimated. As a partial substitute, a small **LN %** badge appears inline with the scoring mode label when the current map has ≥ 30% hold notes, giving you a rough indicator of LN content.
+The dan estimates are **1:1 with the original Dan Overlay engine** — validated against the original on 185 4K maps (including the official Reform dan courses) and 26 7K maps (including the 7K Dan courses).
 
-### Algorithms are not 1:1 accurate
-The Reform estimation uses MinaCalc MSD skillset scores looked up against calibration thresholds. It is a statistical estimate, not a pass/fail determination. Accuracy varies by map type — marathon dan course maps in particular tend to estimate lower than their titled tier because MinaCalc averages difficulty across the entire file including transitions and easier sections.
+Note that "matches the original engine" is not the same as "matches the map's titled dan tier." Like the original, the engine averages difficulty across the whole file, so marathon dan-course maps tend to read a little below their titled tier. On the official courses it lands the exact tier ~51% of the time and within one tier ~88%.
 
-### Pick one UI skin — hide the others
-tosu detects every subfolder with an `index.html` as a separate counter. All five skins (ui-2 through ui-6) will appear in the counter list. Running multiple skins simultaneously multiplies analysis requests. **Pick one skin and delete or rename the folders for the others** to avoid clutter and redundant load:
-```
-# Example: keeping only ui-2, removing the rest
-delete: static/dan-overlay/ui-3/
-delete: static/dan-overlay/ui-4/
-delete: static/dan-overlay/ui-5/
-delete: static/dan-overlay/ui-6/
-```
+## Notes & limitations
 
-### Settings are per-skin and have no quick config panel
-Each UI skin has its own `settings.json`. Settings changed in the tosu counter manager apply only to that skin's counter URL. There is no unified config panel across skins. The scoring mode defaults to Reform — changing it requires either using the tosu settings dropdown for each skin individually or using the in-overlay keyboard shortcut.
+- **7K has no MSD panel** — MinaCalc is 4K-only.
+- **Pick one UI skin.** tosu lists every subfolder with an `index.html` (ui-2…ui-6) as a separate counter. Running several at once is just redundant; keep the one you want and delete the rest.
+- Scoring-mode settings are per-skin (each skin has its own `settings.json`).
 
-### Switching between scoring modes (Celestial / Signicial / Shoegazer / Reform) requires a settings edit or shortcut
-There is no in-overlay UI button to switch modes. Use the tosu counter manager settings dropdown (reloads the counter with the new mode in the URL) or use keyboard shortcuts Ctrl+1–4 while the counter is open in a browser tab. The selected mode is saved to `localStorage` and restored on next load.
+## Rebuilding (for contributors)
 
-### Cannot be integrated into tosu's compiled binary
-This port runs as a separate companion server process rather than being compiled into tosu. The companion server must be running alongside tosu — it cannot be embedded into the pre-built `tosu.exe`. If you build tosu from source, the TypeScript endpoint (`danOverlay.ts`) can be integrated natively and the companion server is not needed.
+The shipped `engine/danEngine.js` and `engine/minacalc.js` are built from the TypeScript engine + MinaCalc source:
+
+- Dan engine: `bash port/build-engine.sh` (needs Node + esbuild via npx).
+- MinaCalc WASM: `bash port/build-wasm.sh <minacalc-rs-0.2.2 dir>` (needs emscripten — see the script header for fetching the source).
+
+## Credits
+
+- Original Dan Overlay — [acarranzao1a-png](https://github.com/acarranzao1a-png/Dan-Overlay)
+- Difficulty engine — [Etterna / MinaCalc](https://github.com/etternagame/etterna)
+- SR engine — [Star-Rating-Rebirth (Sunny)](https://github.com/sunnyxxy/Star-Rating-Rebirth)
+- tosu — [tosuapp/tosu](https://github.com/tosuapp/tosu)
+- tosu port — Ottowa (chowell-it)
+
+Licensed under GPL-3.0 (see `LICENSE`).
