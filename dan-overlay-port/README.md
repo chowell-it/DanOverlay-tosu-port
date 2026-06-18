@@ -20,10 +20,13 @@ Switch in the counter settings: Reform · Celestial · Signicial · Shoegazer.
 LN Course auto-activates on LN-heavy maps (LN ratio > 0.45). DT/HT are detected
 automatically and rate-adjust the rating.
 
+**7K maps** are auto-detected and rated on the dedicated 7K Dan scale
+(0th…10th, Gamma, Azimuth, Zenith, Stellium). 7K has no MSD panel (MinaCalc is 4K-only).
+
 ## Notes
 
-- All five dan tiers are 1:1 with the original Dan Overlay engine (validated on
-  185 maps incl. the official Reform dan courses).
+- Dan tiers are 1:1 with the original Dan Overlay engine (validated on 185 4K maps
+  incl. the official Reform dan courses, and 26 7K maps incl. the 7K Dan courses).
 - The **MinaCalc MSD** panel runs in-browser via WebAssembly (MinaCalc compiled
   from minacalc-rs 0.2.2 — the same calc msd.exe uses; output is identical).
   Needs a browser with WASM SIMD (tosu's webview / any modern browser).
