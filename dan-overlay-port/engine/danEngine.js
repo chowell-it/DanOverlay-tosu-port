@@ -4509,11 +4509,45 @@ var DanEngine = (() => {
       skillsets: { stream: r2(o[1]), jumpstream: r2(o[2]), handstream: r2(o[3]), stamina: r2(o[4]), jackspeed: r2(o[5]), chordjack: r2(o[6]), technical: r2(o[7]) }
     };
   }
+  function buildNpsData(parsed) {
+    const times = (parsed.note_events || []).filter((e) => e.event_type !== "ln_end").map((e) => e.time_ms).sort((a, b) => a - b);
+    const empty = { nps_data: [], dominant_nps: 0, density_meta: { hop_ms: 250, segment_ms: 500 } };
+    if (!times.length) return empty;
+    const half = 250, durS = 0.5;
+    const bl = (v) => {
+      let lo = 0, hi = times.length;
+      while (lo < hi) {
+        const m = lo + hi >>> 1;
+        if (times[m] < v) lo = m + 1;
+        else hi = m;
+      }
+      return lo;
+    };
+    const br = (v) => {
+      let lo = 0, hi = times.length;
+      while (lo < hi) {
+        const m = lo + hi >>> 1;
+        if (times[m] <= v) lo = m + 1;
+        else hi = m;
+      }
+      return lo;
+    };
+    const out = [];
+    let sw = 0, sw2 = 0;
+    for (let t = times[0]; t <= times[times.length - 1]; t += 250) {
+      const nps = (br(t + half) - bl(t - half)) / durS;
+      out.push([t, nps]);
+      sw += nps;
+      sw2 += nps * nps;
+    }
+    return { nps_data: out, dominant_nps: sw > 0 ? sw2 / sw : 0, density_meta: { hop_ms: 250, segment_ms: 500 } };
+  }
   function analyze(osuText, mod = "NM", osuSr = 0) {
     const parsed = parsearOsuV2Text(osuText, true);
     const domain = validateDomain(parsed);
     if (!domain.valid) return { type: "analysis", error: domain.rejection_reason ?? "domain_rejected" };
     const quaver_rating = estimateQuaver(osuText, mod);
+    const nps = buildNpsData(parsed);
     if (domain.is_7k) {
       const sr = calculateText(osuText, mod === "NC" ? "DT" : mod).sr;
       const k = sevenK(sr);
@@ -4533,7 +4567,8 @@ var DanEngine = (() => {
         signicial: null,
         shoegazer: null,
         ln_course: null,
-        osu_sr: osuSr || 0
+        osu_sr: osuSr || 0,
+        ...nps
       };
     }
     const r = analyzeReformText(osuText, mod);
@@ -4576,7 +4611,8 @@ var DanEngine = (() => {
       signicial: estimateSignicial(ss, r.sr, r.family),
       shoegazer: estimateShoegazer(ss, r.sr),
       ln_course: lnCourse,
-      osu_sr: osuSr || 0
+      osu_sr: osuSr || 0,
+      ...nps
     };
   }
   return __toCommonJS(danEngine_exports);

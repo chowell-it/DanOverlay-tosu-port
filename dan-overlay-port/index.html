@@ -472,6 +472,18 @@
             </div>
           </section>
 
+          <section>
+            <p class="cfg-section-title">Display</p>
+            <div class="cfg-row">
+              <label class="cfg-label" for="cfgRatingDisplay">Rating value</label>
+              <select class="cfg-select" id="cfgRatingDisplay">
+                <option value="both">Both (MSD + Quaver)</option>
+                <option value="msd">MSD only</option>
+                <option value="quaver">Quaver only</option>
+              </select>
+            </div>
+          </section>
+
           <!-- Keybinds section -->
           <section>
             <p class="cfg-section-title">Keyboard Shortcuts</p>
@@ -503,9 +515,10 @@
     <canvas id="exportCanvas" width="1800" height="980"></canvas>
   </div>
 
-  <script src="engine/minacalc.js?v=5"></script>
-  <script src="engine/minacalc-glue.js?v=5"></script>
-  <script src="engine/danEngine.js?v=5"></script>
-  <script src="overlay.js?v=5"></script>
+  <script src="engine/minacalc.js?v=6"></script>
+  <script src="engine/minacalc-glue.js?v=6"></script>
+  <script src="engine/danEngine.js?v=6"></script>
+  <script src="graph/chart_renderer.js?v=6"></script>
+  <script src="overlay.js?v=6"></script>
 </body>
 </html>
