@@ -11,5 +11,17 @@
       { "label": "Shoegazer", "value": "shoegazer" }
     ],
     "value": "reform"
+  },
+  {
+    "uniqueID": "ratingDisplay",
+    "type": "list",
+    "title": "Rating display",
+    "description": "Bottom readout: MinaCalc MSD (4K only), Quaver rating (4K+7K), or both.",
+    "options": [
+      { "label": "Both", "value": "both" },
+      { "label": "MSD only", "value": "msd" },
+      { "label": "Quaver only", "value": "quaver" }
+    ],
+    "value": "both"
   }
 ]
