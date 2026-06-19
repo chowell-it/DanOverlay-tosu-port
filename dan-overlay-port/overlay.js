@@ -675,6 +675,32 @@ let _scoringMode = "reform";
     } catch (_) {}
   }
 })();
+// ── Rating display: "msd" | "quaver" | "both" (default) ───────────────────────
+let _ratingDisplay = "both";
+(function () {
+  const p = new URLSearchParams(location.search).get("ratingDisplay");
+  const VALID = ["msd", "quaver", "both"];
+  if (p && VALID.includes(p)) _ratingDisplay = p;
+  else { try { const ls = localStorage.getItem("danOverlay_ratingDisplay"); if (ls && VALID.includes(ls)) _ratingDisplay = ls; } catch (_) {} }
+})();
+// Returns the bottom readout {value,label} per ratingDisplay. Falls back to whichever
+// rating exists (7K has no MSD).
+function ratingReadout(payload) {
+  const msd = Number((payload && payload.overall_msd) || 0);
+  const qsr = Number((payload && payload.quaver_rating) || 0);
+  const fmsd = msd > 0 ? msd.toFixed(2) : "--.-";
+  const fqsr = qsr > 0 ? qsr.toFixed(2) : "--.-";
+  if (_ratingDisplay === "msd") return { value: fmsd, label: "MSD" };
+  if (_ratingDisplay === "quaver") return { value: fqsr, label: "QUAVER" };
+  if (msd <= 0 && qsr > 0) return { value: fqsr, label: "QUAVER" };
+  if (qsr <= 0 && msd > 0) return { value: fmsd, label: "MSD" };
+  return { value: `${fmsd} · ${fqsr}`, label: "MSD · QSR" };
+}
+function _applyRatingLabel(payload) {
+  const lbl = ratingReadout(payload).label;
+  document.querySelectorAll(".msd-unit").forEach((e) => { e.textContent = lbl; });
+}
+
 // LN auto-override: true when current map is LN-routed, reverts on next rice map
 let _lnOverrideActive = false;
 // LN manual pin: when true, LN Course mode stays forced regardless of pipeline
@@ -1188,6 +1214,7 @@ function relativeLuminance(rgb) {
 /* ── Analysis rendering (shared by WS handler + mode toggle) ─────────── */
 function _renderAnalysisPayload(payload) {
   if (!payload) return;
+  _applyRatingLabel(payload);
 
   const SKILLSET_LABELS = {
     stream: "STREAM", jumpstream: "JS", handstream: "HS",
@@ -1248,7 +1275,7 @@ function _renderAnalysisPayload(payload) {
       danShort: lShort,
       dp: lDp,
       danSuffix: lBeyond ? "Beyond" : lSublevel,
-      metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+      metrics: ratingReadout(payload).value,
       chart: familyText,
       chartColor: primaryFamily,
       lnCourseMode: true,
@@ -1339,7 +1366,7 @@ function _renderAnalysisPayload(payload) {
       danShort: cShort,
       dp: cDp,
       danSuffix: cBeyond ? "Beyond" : cSublevel,
-      metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+      metrics: ratingReadout(payload).value,
       chart: familyText,
       chartColor: primaryFamily,
       celestialMode: true,
@@ -1370,7 +1397,7 @@ function _renderAnalysisPayload(payload) {
       danShort: sShort,
       dp: sDp,
       danSuffix: sSuffix,
-      metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+      metrics: ratingReadout(payload).value,
       chart: familyText,
       chartColor: primaryFamily,
       signicialMode: true,
@@ -1400,7 +1427,7 @@ function _renderAnalysisPayload(payload) {
       danShort: gShort,
       dp: gDp,
       danSuffix: gSuffix,
-      metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+      metrics: ratingReadout(payload).value,
       chart: familyText,
       chartColor: primaryFamily,
       shoegazerMode: true,
@@ -1425,7 +1452,7 @@ function _renderAnalysisPayload(payload) {
     danShort: String(payload.dan_short || ""),
     dp: Number(payload.dp || 0),
     danSuffix: displaySuffix,
-    metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+    metrics: ratingReadout(payload).value,
     chart: familyText,
     chartColor: primaryFamily,
   });
