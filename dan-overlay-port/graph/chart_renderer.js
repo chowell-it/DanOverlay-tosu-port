@@ -678,23 +678,18 @@ function renderExportChart(payload) {
           console.log("[CHART] _doCapture called");
           const fn = `${artist} - ${title} [${version}]`;
 
-          const b64 = canvas.toDataURL("image/png");
-
-          console.log("[CHART] b64 length:", b64.length, "fn:", fn);
           if (typeof setChartGenerating === "function") setChartGenerating(false);
-          if (window.pywebview && window.pywebview.api && window.pywebview.api.save_chart) {
-            console.log("[CHART] Calling save_chart...");
-            window.pywebview.api.save_chart(b64, fn).then(res => {
-              if (typeof showToast === "function") {
-                if (res.status === "ok") showToast(res.message || "✓ Imagen generada", 2000);
-                else showToast(res.message || "Error al guardar", 3000);
-              }
-            }).catch((err) => {
-              if (typeof showToast === "function") showToast("Error al guardar la imagen", 3000);
-            });
-          } else {
-            if (typeof showToast === "function") showToast("save_chart no disponible", 3000);
-          }
+          // ponytail: browser download, no python bridge. Sanitize fn for filesystem.
+          const safe = fn.replace(/[\\/:*?"<>|]/g, "_");
+          canvas.toBlob((blob) => {
+            if (!blob) { if (typeof showToast === "function") showToast("Error al generar la imagen", 3000); return; }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url; a.download = safe + ".png";
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            if (typeof showToast === "function") showToast("✓ Imagen generada", 2000);
+          }, "image/png");
         } catch (err) {
           if (window.pywebview && window.pywebview.api && window.pywebview.api.log_js_error) {
             window.pywebview.api.log_js_error("Error inside _doCapture: " + err.toString());

@@ -2619,28 +2619,33 @@ document.addEventListener("keydown", async (e) => {
   if (_cfgIsOpen()) return;
   if (!isKeybind("generate_chart", e)) return;
   console.log("[CHART] G pressed. _chartReady:", _chartReady, "chartGenerating:", chartGenerating, "introStage:", introStage);
-  if (chartGenerating || (!_chartReady && introStage === "done")) {
-    showToast(chartGenerating ? "Already generating..." : "Waiting for data...", 1800);
-    return;
-  }
-  if (!window.pywebview || !window.pywebview.api ||
-    typeof window.pywebview.api.on_generate_chart !== "function") {
-    console.log("[CHART] Bridge not available");
-    showToast("Bridge not available", 2500);
-    return;
-  }
+  if (chartGenerating) { showToast("Already generating...", 1800); return; }
+  const p = _lastAnalysisPayload;
+  if (!p || !p.nps_data || !p.nps_data.length) { showToast("Waiting for data...", 1800); return; }
   setChartGenerating(true);
-  showToast("Generating chart...", 2500);
+  showToast("Generating chart...", 1500);
   try {
-    // Python computes the data and pushes renderExportChart() via evaluate_js
-    // from a background thread. We just need to trigger the process here.
-    const result = await window.pywebview.api.on_generate_chart();
-    if (!result || result.status !== "ok") {
-      showToast(result?.message || "Error generating chart", 3000);
-      setChartGenerating(false);
-    }
-    // If status is "ok", Python will call renderExportChart() via evaluate_js shortly.
-    // renderExportChart handles setChartGenerating(false) and save_chart internally.
+    // ponytail: all client-side now — engine emits nps_data, renderExportChart
+    // downloads the PNG via canvas.toBlob. No python bridge.
+    renderExportChart({
+      type: "render_export_chart",
+      nps_data: p.nps_data,
+      density_meta: p.density_meta || {},
+      dominant_nps: p.dominant_nps || 0,
+      overall_msd: p.overall_msd || 0,
+      dan_short: p.dan_short || "",
+      family: p.family || "",
+      skillsets: p.skillsets || {},
+      parsed_meta: {
+        bpm: p.bpm || 0, od: p.od || 0,
+        artist: p.artist || "", title: p.title || "", version: p.version || "",
+        creator: p.mapper || p.creator || "",
+        note_count: p.note_count || 0, ln_count: p.ln_count || 0,
+        drain_time_s: p.duration_s || 0,
+        total_time_ms: p.total_time_ms || (p.duration_s ? p.duration_s * 1000 : 0),
+        sr_official: p.osu_sr || 0,
+      },
+    });
   } catch (_err) {
     console.error("[CHART] Error:", _err);
     showToast("Error generating chart: " + (_err.message || _err), 3000);
@@ -3650,6 +3655,8 @@ function _renderCfgPanel() {
   if (framelessChk) framelessChk.checked = _settings.frameless;
   const skinSel = document.getElementById("cfgSkinSelect");
   if (skinSel) skinSel.value = _settings.skin;
+  const rdSel = document.getElementById("cfgRatingDisplay");
+  if (rdSel) rdSel.value = _ratingDisplay;
   // Window size inputs — populate with current dimensions from Python
   _populateWindowSizeInputs();
   _renderKeybindRows();
@@ -4005,6 +4012,15 @@ function _initCfgListeners() {
       _applySettings();
     });
     danScaleNum.addEventListener("focus", () => danScaleNum.select());
+  }
+  const ratingSel = document.getElementById("cfgRatingDisplay");
+  if (ratingSel) {
+    ratingSel.value = _ratingDisplay;
+    ratingSel.addEventListener("change", () => {
+      _ratingDisplay = ratingSel.value;
+      try { localStorage.setItem("danOverlay_ratingDisplay", _ratingDisplay); } catch (_) {}
+      if (_lastAnalysisPayload) _renderAnalysisPayload(_lastAnalysisPayload);
+    });
   }
   const skinSel = document.getElementById("cfgSkinSelect");
   if (skinSel) {
