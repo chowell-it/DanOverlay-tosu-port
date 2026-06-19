@@ -4275,17 +4275,46 @@ var DanEngine = (() => {
     }
     return lowestDifficulty + (strainMax - lowestDifficulty) * Math.pow(ratio, exp);
   }
-  function buildInput(parsed) {
+  function mapXToCol2(x, K) {
+    let xc = x;
+    if (x < 0) xc = 0;
+    else if (x >= 512) xc = 511;
+    return Math.min(Math.trunc(xc * K / 512), K - 1);
+  }
+  function buildInputFromText(raw) {
+    const lines = raw.split(/\r\n|\r|\n/);
+    let K = 4, section = "";
     const hits = [];
-    for (const e of parsed.note_events) {
-      if (e.event_type === "ln_end") continue;
-      if (e.event_type === "ln_start") hits.push({ lane: e.col + 1, start: e.ln_start_ms, end: e.ln_end_ms });
-      else hits.push({ lane: e.col + 1, start: e.time_ms, end: 0 });
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (line[0] === "[" && line.endsWith("]")) {
+        section = line;
+        continue;
+      }
+      if (section === "[Difficulty]") {
+        if (line.startsWith("CircleSize:")) {
+          const v = parseFloat(line.split(/:(.*)/s)[1]);
+          if (!Number.isNaN(v)) K = Math.max(1, Math.round(v));
+        }
+      } else if (section === "[HitObjects]") {
+        const p = line.split(",");
+        if (p.length < 4) continue;
+        const x = Math.trunc(parseFloat(p[0])), t = Math.trunc(parseFloat(p[2])), type = Math.trunc(parseFloat(p[3]));
+        if (Number.isNaN(x) || Number.isNaN(t)) continue;
+        const lane = mapXToCol2(x, K) + 1;
+        let end = 0;
+        if (type & 128 && p.length >= 6) {
+          const e = Math.trunc(parseFloat(p[5].split(":")[0]));
+          if (!Number.isNaN(e) && e > t) end = e;
+        }
+        hits.push({ lane, start: t, end });
+      }
     }
-    hits.sort((a, b) => a.start - b.start || a.lane - b.lane);
+    hits.sort((a, b) => a.start - b.start);
     let length = 0;
     for (const h of hits) length = Math.max(length, h.start, h.end);
-    return { hits, keyCount: parsed.keycount_native, length, count: hits.length };
+    return { hits, keyCount: K, length, count: hits.length };
   }
   function computeForHand(inp, rate, assumeHand, sd) {
     const avgDensity = SECONDS_TO_MS * inp.count / (inp.length * (-0.5 * rate + 1.5));
@@ -4401,12 +4430,11 @@ var DanEngine = (() => {
     }
     if (sd.length === 0) return 0;
     for (const data of sd) {
-      let total = 0;
       for (const h of data.hitObjects) {
         h.strainValue = data.actionCoeff * data.patternMult * data.rollManipMult * data.jackManipMult * h.lnStrainMult;
-        total += h.strainValue;
+        data.totalStrain += h.strainValue;
       }
-      data.totalStrain = total / data.hitObjects.length;
+      data.totalStrain /= data.hitObjects.length;
     }
     let calculatedDiff = sd.reduce((a, s) => a + s.totalStrain, 0) / sd.length;
     const binSize = 1e3;
@@ -4456,14 +4484,14 @@ var DanEngine = (() => {
     return calculatedDiff;
   }
   var MOD_RATE = { NM: 1, DT: 1.5, NC: 1.5, HT: 0.75 };
-  function estimateQuaver(parsed, mod = "NM") {
-    if (parsed.object_count < 2) return 0;
+  function estimateQuaver(osuText, mod = "NM") {
     const rate = MOD_RATE[mod] ?? 1;
-    const inp = buildInput(parsed);
+    const inp = buildInputFromText(osuText);
     if (inp.count < 2 || inp.length <= 0) return 0;
-    if (inp.keyCount % 2 !== 0) return 0;
     const sd = [];
-    const diff = computeForHand(inp, rate, 1, sd);
+    let diff;
+    if (inp.keyCount % 2 === 0) diff = computeForHand(inp, rate, 1, sd);
+    else diff = (computeForHand(inp, rate, 0, sd) + computeForHand(inp, rate, 1, sd)) / 2;
     return Math.round(diff * 100) / 100;
   }
 
@@ -4485,7 +4513,7 @@ var DanEngine = (() => {
     const parsed = parsearOsuV2Text(osuText, true);
     const domain = validateDomain(parsed);
     if (!domain.valid) return { type: "analysis", error: domain.rejection_reason ?? "domain_rejected" };
-    const quaver_rating = estimateQuaver(parsed, mod);
+    const quaver_rating = estimateQuaver(osuText, mod);
     if (domain.is_7k) {
       const sr = calculateText(osuText, mod === "NC" ? "DT" : mod).sr;
       const k = sevenK(sr);
