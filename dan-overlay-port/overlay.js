@@ -718,10 +718,10 @@ function extractMapSupportInfo(payload) {
 
   if (!isMania) {
     supported = false;
-    reason = `Unsupported mode: ${modeToLabel(modeRaw)}. Please select an osu!mania 4K map.`;
-  } else if (keyCount != null && keyCount !== 4) {
+    reason = `Unsupported mode: ${modeToLabel(modeRaw)}. Please select an osu!mania 4K or 7K map.`;
+  } else if (keyCount != null && keyCount !== 4 && keyCount !== 7) {
     supported = false;
-    reason = `Unsupported key mode: ${keyCount}K. Please select an osu!mania 4K map.`;
+    reason = `Unsupported key mode: ${keyCount}K. Please select an osu!mania 4K or 7K map.`;
   }
 
   return {
@@ -749,7 +749,7 @@ function applyUnsupportedMapWarning(info) {
 
   // Update compact-bar left column with the warning message
   if (ui.mapTitle) ui.mapTitle.textContent = `${info.modeLabel}${info.keyCount != null ? ` ${info.keyCount}K` : ""} — Unsupported`;
-  if (ui.mapArtist) ui.mapArtist.textContent = "Please select an osu!mania 4K map";
+  if (ui.mapArtist) ui.mapArtist.textContent = "Please select an osu!mania 4K or 7K map";
 
   if (ui.progressWrap) {
     ui.progressWrap.classList.remove("showing", "paused", "finished");
