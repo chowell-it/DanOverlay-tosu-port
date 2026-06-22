@@ -682,32 +682,26 @@ function renderExportChart(payload) {
           // ponytail: browser download, no python bridge. Sanitize fn for filesystem.
           const safe = fn.replace(/[\\/:*?"<>|]/g, "_");
           canvas.toBlob((blob) => {
-            if (!blob) { if (typeof showToast === "function") showToast("Error al generar la imagen", 3000); return; }
+            if (!blob) { if (typeof showToast === "function") showToast("Failed to generate image", 3000); return; }
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url; a.download = safe + ".png";
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(() => URL.revokeObjectURL(url), 1000);
-            if (typeof showToast === "function") showToast("✓ Imagen generada", 2000);
+            if (typeof showToast === "function") showToast("✓ Chart image saved", 2000);
           }, "image/png");
         } catch (err) {
-          if (window.pywebview && window.pywebview.api && window.pywebview.api.log_js_error) {
-            window.pywebview.api.log_js_error("Error inside _doCapture: " + err.toString());
-          }
-          if (typeof showToast === "function") showToast("Error en _doCapture: " + err.toString(), 4000);
+          console.error("[CHART] Exception in _doCapture:", err);
+          if (typeof showToast === "function") showToast("Chart capture error: " + err.toString(), 4000);
           if (typeof setChartGenerating === "function") setChartGenerating(false);
         }
       }
     } catch (err) {
       console.error("[CHART] Exception in renderExportChart:", err);
-      if (typeof showToast === "function") showToast("Error en renderExportChart: " + (err.message || err), 4000);
+      if (typeof showToast === "function") showToast("Chart render error: " + (err.message || err), 4000);
       if (typeof setChartGenerating === "function") setChartGenerating(false);
     }
   } catch (err) {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.log_js_error) {
-      window.pywebview.api.log_js_error(err.stack || err.toString());
-    } else {
-      console.error("[CHART ERROR]", err);
-    }
+    console.error("[CHART ERROR]", err);
   }
 }

@@ -1,6 +1,8 @@
-Usecase: Unoffical Port of Standalone Dan Overlay to tosu! Element
+Usecase: ingame, obs-overlay
 Name: Dan Overlay tosu! Port
+Version: 3.2.0
 Author: Ottowa
-Version: 3.1.0
-Description: Live Dan tier estimation for osu!mania 4K (Reform, Celestial, Signicial, Shoegazer, LN Course) and 7K. Runs fully in-browser (MinaCalc MSD via WebAssembly) - no external process. Supports all UI skins and scoring modes.
-Overlay: index.html
+CompatibleWith: tosu
+Resolution: 700 x 320
+authorLinks: https://github.com/chowell-it/DanOverlay-tosu-port
+Notes: Live osu!mania dan-tier estimation for 4K (Reform, Celestial, Signicial, Shoegazer, LN Course) and 7K, plus MSD (MinaCalc via WebAssembly) and Quaver difficulty ratings. Runs fully in-browser — no external process. Multiple skins and scoring modes; press G to export a note-density chart.

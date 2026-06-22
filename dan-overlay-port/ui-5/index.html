@@ -412,7 +412,11 @@
 
   </main>
 
-  <!-- overlay.js handles all logic: data binding, key events, palette injection -->
+  <!-- engine assets first, then overlay.js (data binding, key events, palette) -->
+  <script src="../engine/minacalc.js?v=6"></script>
+  <script src="../engine/minacalc-glue.js?v=6"></script>
+  <script src="../engine/danEngine.js?v=6"></script>
+  <script src="../graph/chart_renderer.js?v=6"></script>
   <script src="../overlay.js"></script>
 
   <!-- Export Chart Hidden Canvas (JS compatibility) -->
