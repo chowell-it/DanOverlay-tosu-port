@@ -1,4 +1,7 @@
-const WS_URL = "ws://localhost:24050/ws";
+// tosu v2 socket with server-side filters — only the fields this counter reads
+// are sent, per the counters CONTRIBUTING websocket-filter requirement.
+const WS_FILTERS = "state,beatmap,play,resultsScreen,files";
+const WS_URL = "ws://localhost:24050/websocket/v2?filters=" + encodeURIComponent(WS_FILTERS);
 
 const DAN_PALETTES = {
   "1st Dan": ["rgb(118,199,255)", "rgb(231,244,255)"],
@@ -231,7 +234,6 @@ const ui = {
 
 let ws = null;
 let reconnectTimer = null;
-let bridgeMode = false;
 
 // Progress bar state variables
 let prog_wasPlaying = false;
@@ -477,36 +479,12 @@ let _settings = {
   greenScreen: false, // replace map background with solid #00ff00 for chroma key
   frameless: false,   // remove OS title bar for clean OBS capture (requires restart)
   neverShowTutorial: false,
-  windowWidth: null,   // explicit window width in px (null = use default / drag resize)
-  windowHeight: null,  // explicit window height in px
   keybinds: JSON.parse(JSON.stringify(_DEFAULT_KEYBINDS)),
 };
 
-async function _waitForPywebviewMethod(methodName, timeoutMs = 2000) {
-  if (!window.pywebview) return null;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const method = window.pywebview?.api?.[methodName];
-    if (typeof method === "function") {
-      return method.bind(window.pywebview.api);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return null;
-}
-
-async function _loadSettings() {
+function _loadSettings() {
   let raw = null;
-  try {
-    const loadSettingsApi = await _waitForPywebviewMethod("load_settings");
-    if (loadSettingsApi) {
-      raw = await loadSettingsApi();
-    }
-  } catch (_) { }
-  if (!raw) {
-    // Fallback: localStorage (dev mode or migration from older install)
-    try { raw = localStorage.getItem(_SETTINGS_KEY); } catch (_) { }
-  }
+  try { raw = localStorage.getItem(_SETTINGS_KEY); } catch (_) { }
   if (!raw) return;
   try {
     const saved = JSON.parse(raw);
@@ -518,8 +496,6 @@ async function _loadSettings() {
     if (typeof saved.greenScreen === "boolean") _settings.greenScreen = saved.greenScreen;
     if (typeof saved.frameless === "boolean") _settings.frameless = saved.frameless;
     if (typeof saved.neverShowTutorial === "boolean") _settings.neverShowTutorial = saved.neverShowTutorial;
-    if (typeof saved.windowWidth === "number") _settings.windowWidth = saved.windowWidth;
-    if (typeof saved.windowHeight === "number") _settings.windowHeight = saved.windowHeight;
     if (typeof saved.layout === "string" && ["complete", "simplified", "compact"].includes(saved.layout))
       _settings.layout = saved.layout;
     if (saved.keybinds && typeof saved.keybinds === "object") {
@@ -535,17 +511,8 @@ async function _loadSettings() {
   } catch (_) { }
 }
 
-async function _saveSettings() {
-  const json = JSON.stringify(_settings);
-  // Always mirror to localStorage (dev/fallback)
-  try { localStorage.setItem(_SETTINGS_KEY, json); } catch (_) { }
-  // Primary: persist via Python to %APPDATA%\DanOverlay\settings.json
-  try {
-    const saveSettingsApi = await _waitForPywebviewMethod("save_settings");
-    if (saveSettingsApi) {
-      await saveSettingsApi(json);
-    }
-  } catch (_) { }
+function _saveSettings() {
+  try { localStorage.setItem(_SETTINGS_KEY, JSON.stringify(_settings)); } catch (_) { }
 }
 
 function _applySettings() {
@@ -584,7 +551,6 @@ function _applySettings() {
 
 /* ── Layout density modes ───────────────────────────────────────────── */
 const _LAYOUT_MODES = ["complete", "simplified", "compact"];
-const _LAYOUT_HEIGHTS = { complete: 320, simplified: 220, compact: 76 };
 let _layoutMode = "complete";
 
 function _applyLayoutMode(skipResize) {
@@ -594,15 +560,6 @@ function _applyLayoutMode(skipResize) {
   if (!panel) return;
   panel.classList.remove("layout-simplified", "layout-compact");
   if (_layoutMode !== "complete") panel.classList.add("layout-" + _layoutMode);
-  if (skipResize) return;
-  const h = _LAYOUT_HEIGHTS[_layoutMode];
-  
-  const isFrameless = _settings && _settings.frameless;
-  const currentOuterW = isFrameless ? window.innerWidth : (window.innerWidth + 16);
-  
-  if (window.pywebview?.api?.set_window_size) {
-    window.pywebview.api.set_window_size(currentOuterW, h);
-  }
 }
 
 function _cycleLayout() {
@@ -617,24 +574,6 @@ function _cycleLayout() {
     panel.classList.toggle("is-expanded");
     const isExp = panel.classList.contains("is-expanded");
     if (typeof showToast === "function") showToast(isExp ? "Map info: Expanded" : "Map info: Hidden", 1600);
-    
-    // Ignore the programmatic resize to prevent double-stretching the UI
-    window._ignoreNextP2Resize = true;
-    if (typeof window._resetP2ResizeStates === "function") window._resetP2ResizeStates();
-    
-    // PyWebView's _window.width can be stale on Windows, so we pass the accurate outerWidth from JS
-    const isFrameless = _settings && _settings.frameless;
-    const currentOuterW = isFrameless ? window.innerWidth : (window.innerWidth + 16);
-
-    if (_CURRENT_SKIN === "4" && window.pywebview?.api?.set_window_size) {
-      window.pywebview.api.set_window_size(currentOuterW, isExp ? 466 : 335);
-    } else if (_CURRENT_SKIN === "5" && window.pywebview?.api?.set_window_size) {
-      window.pywebview.api.set_window_size(currentOuterW, isExp ? 272 : 170);
-      document.documentElement.style.zoom = isExp ? 0.75 : 0.75;
-    } else if (_CURRENT_SKIN === "6" && window.pywebview?.api?.set_window_size) {
-      window.pywebview.api.set_window_size(currentOuterW, isExp ? 297 : 211);
-      document.documentElement.style.zoom = isExp ? 0.73 : 0.73;
-    }
     return;
   }
 
@@ -824,6 +763,41 @@ function safeGet(obj, path, fallback = undefined) {
   } catch (_err) {
     return fallback;
   }
+}
+
+// Reshape a tosu /websocket/v2 message into the legacy v1 shape the rest of this
+// file reads (menu.bm.* / gameplay.* / resultsScreen.*). Keeps the v2 filter
+// benefit without rewriting every safeGet path. For mania, key count = CS.
+function normalizeV2(v2) {
+  if (!v2 || !v2.beatmap) return v2; // already v1-shaped or empty frame
+  const b = v2.beatmap, s = b.stats || {}, mode = b.mode?.number;
+  const keys = s.cs?.original;
+  return {
+    menu: {
+      state: v2.state?.number,
+      gameMode: mode,
+      mods: { num: v2.play?.mods?.number ?? 0 },
+      bm: {
+        md5: b.checksum,
+        mode,
+        metadata: {
+          artist: b.artist, title: b.title, mapper: b.mapper,
+          version: b.version, difficulty: b.version, mode,
+          keyCount: keys, keys,
+        },
+        stats: {
+          BPM: s.bpm?.common, HP: s.hp?.original, OD: s.od?.original,
+          SR: s.stars?.live, fullSR: s.stars?.total,
+          circles: s.objects?.circles, holds: s.objects?.holds,
+          keyCount: keys, keys,
+        },
+        time: { current: b.time?.live, full: b.time?.lastObject, mp3: b.time?.mp3Length },
+        path: { bg: v2.files?.background },
+      },
+    },
+    gameplay: { accuracy: v2.play?.accuracy },
+    resultsScreen: { accuracy: v2.resultsScreen?.accuracy },
+  };
 }
 
 function normalizeText(text) {
@@ -1800,28 +1774,6 @@ function renderMsdBars(estimates, overallMsd) {
   ui.density.classList.add("has-data");
 }
 
-function findDanOverlay(payload) {
-  if (!payload || typeof payload !== "object") {
-    return "";
-  }
-
-  const directCandidates = [
-    payload.danOverlay,
-    safeGet(payload, "overlay.danOverlay"),
-    safeGet(payload, "menu.danOverlay"),
-    safeGet(payload, "gameplay.danOverlay"),
-    safeGet(payload, "results.danOverlay")
-  ];
-
-  for (const candidate of directCandidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate;
-    }
-  }
-
-  return "";
-}
-
 // Fades the BG out, waits for the image to load AND the fade to finish,
 // then sets the new image and fades it back in. On rapid map changes only
 // the latest generation actually reveals — stale ones are discarded.
@@ -2037,12 +1989,11 @@ function applyProgressData(payload) {
 function applyBeatmapData(payload) {
   const artist = safeGet(payload, "menu.bm.metadata.artist", "Unknown Artist");
   const title = safeGet(payload, "menu.bm.metadata.title", "Unknown Title");
-  // prefer 'version' (same field Python reads) then 'difficulty' as fallback
+  // prefer 'version', fall back to 'difficulty'
   const diff = safeGet(payload, "menu.bm.metadata.version",
     safeGet(payload, "menu.bm.metadata.difficulty", "Unknown Diff"));
 
-  // Use md5 as the primary map key — it is unambiguous and always matches the
-  // Python bridge key (which also receives md5 from tosu).  Fall back to the
+  // Use md5 as the primary map key — unambiguous. Fall back to the
   // string combo only when md5 is absent (e.g. no map loaded).
   const md5 = safeGet(payload, "menu.bm.md5", "");
   const mapKey = (md5 || buildMapKey(artist, title, diff)) + "|" + safeGet(payload, "menu.mods.num", 0);
@@ -2127,97 +2078,12 @@ function applyBeatmapData(payload) {
   return supportInfo;
 }
 
-function applyFromPythonBridge(payload) {
+function applyResult(payload) {
   try {
     if (!payload || typeof payload !== "object") {
       return;
     }
 
-    if (payload.type === "bridge-init") {
-      bridgeMode = true;
-      if (!_pythonBridgeReady) {
-        _pythonBridgeReady = true;
-        // In bridge mode we KEEP the connect screen visible and show a
-        // "Waiting for tosu" spinner. The screen will advance to "Connected"
-        // (green check) only when the first real state/data arrives from tosu.
-        // This gives the user proper visual feedback instead of a blank overlay.
-        if (introStage === "connecting") {
-          _showSearching();                     // ensure spinner + download btn visible
-          if (connectEl) connectEl.classList.remove("hidden", "fading");
-          _startOsuCheck();                     // start polling osu! status
-        }
-        // Re-load settings from Python file now that the API is reachable.
-        _loadSettings().then(() => {
-          _applySettings();
-          const savedLayout = _settings.layout || "complete";
-          if (savedLayout !== _layoutMode) {
-            _layoutMode = savedLayout;
-            _applyLayoutMode(true);
-          }
-          // Apply saved window size OR skin defaults safely inside the .then block
-          // once the python settings have been loaded and the API is guaranteed ready.
-          let w = _settings.windowWidth;
-          let h = _settings.windowHeight;
-          const isLegacyDefault = (w === 700 && h === 320) || (w === 860 && h === 320);
-          if (isLegacyDefault && (_CURRENT_SKIN === "4" || _CURRENT_SKIN === "5" || _CURRENT_SKIN === "6")) {
-            w = null;
-            h = null;
-          }
-          if (_CURRENT_SKIN === "4") {
-            document.documentElement.style.zoom = 0.61;
-          } else if (_CURRENT_SKIN === "5") {
-            document.documentElement.style.zoom = 0.75;
-          } else if (_CURRENT_SKIN === "6") {
-            document.documentElement.style.zoom = 0.73;
-          }
-          if (w && h && window.pywebview?.api?.set_window_size) {
-            window.pywebview.api.set_window_size(w, h);
-          } else if (!w && !h && window.pywebview?.api?.set_window_size) {
-            if (_CURRENT_SKIN === "4") {
-              window.pywebview.api.set_window_size(284, 335);
-            } else if (_CURRENT_SKIN === "5") {
-              window.pywebview.api.set_window_size(589, 170);
-            } else if (_CURRENT_SKIN === "6") {
-              window.pywebview.api.set_window_size(645, 211);
-            } else {
-              window.pywebview.api.set_window_size(700, 320);
-            }
-          }
-        });
-      }
-      return;
-    }
-
-    if (payload.type === "notification") {
-      showToast(payload.message || "Done", 3500);
-      setChartDone();
-      return;
-    }
-
-    if (payload.type === "visualizer") {
-      vizActive = !!payload.active;
-      if (payload.bands && Array.isArray(payload.bands)) {
-        for (let i = 0; i < vizTarget.length; i++) {
-          vizTarget[i] = payload.bands[i] || 0;
-        }
-      }
-      if (!vizActive) vizTarget.fill(0);
-      return;
-    }
-
-    // When real tosu data arrives while still on the connect screen in bridge
-    // mode, we record that tosu is connected and check if osu! is also running.
-    if (_pythonBridgeReady && introStage === "connecting") {
-      const incomingState = (payload.type === "state") ? (payload.state || "") : "";
-      // Only advance on real connection — not on waiting_tosu state
-      const isRealData = payload.type !== "state" || (incomingState !== "waiting_tosu" && incomingState !== "");
-      if (isRealData) {
-        _tosuConnected = true;
-      } else if (incomingState === "waiting_tosu") {
-        _tosuConnected = false;
-      }
-      _checkAndAdvanceConnection();
-    }
 
     // ── Overlay state changes (waiting_tosu, analyzing, ready, error) ──
     if (payload.type === "state") {
@@ -2362,8 +2228,8 @@ function applyFromPythonBridge(payload) {
     }
   } catch (err) {
     finishMapTransition();
-    applyLoading(`Bridge error: ${err && err.message ? err.message : err}`);
-    showToast(`Bridge error: ${err && err.message ? err.message : err}`, 5000);
+    applyLoading(`Engine error: ${err && err.message ? err.message : err}`);
+    showToast(`Engine error: ${err && err.message ? err.message : err}`, 5000);
   }
 
   // ── Legacy structured DP result (backwards compat) ────────────────
@@ -2430,38 +2296,30 @@ function applyFromPythonBridge(payload) {
   }
 }
 
-// (old renderExportChart removed — see bottom of file for current version)
-
-// Expose the Python bridge callback as soon as the script loads so startup
-// events that arrive before boot() do not kill the bridge.
-window.__overlayFromPython = applyFromPythonBridge;
-
-// tosu-port (JS-only): fetch analysis from tosu's built-in TypeScript endpoint.
-// No Python server needed — scoring runs inside tosu's own process.
-// Requires danOverlay.ts patch applied to packages/server/router/.
-// Pure in-browser analysis: fetch the current .osu from tosu and run the bundled
-// engine (window.DanEngine). No sidecar, no tosu modification.
+// Pure in-browser analysis: fetch the current .osu from tosu's HTTP file
+// endpoint and run the bundled engine (window.DanEngine). No sidecar, no
+// tosu modification, no external process.
 async function fetchDanAnalysis() {
   try {
     if (!window.DanEngine || typeof window.DanEngine.analyze !== "function") {
-      applyFromPythonBridge({ type: "state", state: "error", message: "Dan engine not loaded (engine/danEngine.js)" });
+      applyResult({ type: "state", state: "error", message: "Dan engine not loaded (engine/danEngine.js)" });
       return;
     }
-    applyFromPythonBridge({ type: "state", state: "analyzing", message: "Computing..." });
+    applyResult({ type: "state", state: "analyzing", message: "Computing..." });
     const res = await fetch("http://localhost:24050/files/beatmap/file");
     if (!res.ok) {
-      applyFromPythonBridge({ type: "state", state: "idle", message: "No beatmap loaded" });
+      applyResult({ type: "state", state: "idle", message: "No beatmap loaded" });
       return;
     }
     const txt = await res.text();
     const out = window.DanEngine.analyze(txt, _curMod || "NM", _curOsuSr || 0);
     if (out && out.error) {
-      applyFromPythonBridge({ type: "state", state: "idle", message: String(out.error) });
+      applyResult({ type: "state", state: "idle", message: String(out.error) });
       return;
     }
-    applyFromPythonBridge({ type: "analysis", ...out });
+    applyResult({ type: "analysis", ...out });
   } catch (err) {
-    applyFromPythonBridge({
+    applyResult({
       type: "state", state: "error",
       message: "Analysis error: " + (err && err.message ? err.message : String(err))
     });
@@ -2479,15 +2337,14 @@ function connect() {
   }
 
   ws.addEventListener("open", () => {
+    _tosuConnected = true;
     if (introStage === "splash" || introStage === "tutorial_prompt" ||
       introStage === "whats_new" || introStage === "hint" || introStage === "hint2" ||
       introStage === "hint3" || introStage === "hint4" || introStage === "hint_settings" || introStage === "hint_settings") {
       _wsOpenedEarly = true;              // intro screens will skip connecting on exit
     } else if (introStage === "connecting") {
       setIntroStage("connected");
-    } else if (!_pythonBridgeReady) {
-      // Only update display on reconnect when Python bridge isn't the real source.
-      // In bridge mode the WS is used by Python-side; JS side silently reconnects.
+    } else {
       applyLoading("Computing");
     }
   });
@@ -2495,7 +2352,7 @@ function connect() {
   ws.addEventListener("message", (event) => {
     let payload;
     try {
-      payload = JSON.parse(event.data);
+      payload = normalizeV2(JSON.parse(event.data));
     } catch (_err) {
       return;
     }
@@ -2507,26 +2364,13 @@ function connect() {
       return;
     }
 
-    // tosu-port: trigger server-side analysis on map change (non-bridge mode only)
-    if (!_pythonBridgeReady && lastMapKey && lastMapKey !== _lastAnalyzedKey) {
+    // Trigger a fresh in-browser analysis whenever the map (or mods) changes.
+    if (lastMapKey && lastMapKey !== _lastAnalyzedKey) {
       _lastAnalyzedKey = lastMapKey;
       fetchDanAnalysis();
     }
 
     applyProgressData(payload);
-
-    const danRaw = findDanOverlay(payload);
-    if (danRaw) {
-      // remember what we got so later updates without the property don't
-      // overwrite the result with a loading state.
-      lastDanRaw = danRaw;
-
-      const parsed = parseDanOverlay(danRaw);
-      if (parsed) {
-        applyDanResult(parsed);
-        return;
-      }
-    }
 
     // only show a loading state if we haven't received any dan result yet; once
     // we have one we keep showing it until the map changes (handled above).
@@ -2539,12 +2383,10 @@ function connect() {
 
   ws.addEventListener("close", () => {
     _wsOpenedEarly = false;
+    _tosuConnected = false;
     if (introStage === "done") {
-      if (!_pythonBridgeReady) {
-        // Only show reconnecting screen when Python bridge isn't handling the data.
-        finishMapTransition();
-        applyLoading("Reconnecting");
-      }
+      finishMapTransition();
+      applyLoading("Reconnecting");
       scheduleReconnect();
     } else if (introStage === "hint" || introStage === "hint2" ||
       introStage === "hint3" || introStage === "hint4" || introStage === "hint_settings" ||
@@ -2553,25 +2395,17 @@ function connect() {
       scheduleReconnect();
     } else {
       // Dropped during intro (splash/connecting/connected)
-      if (_pythonBridgeReady) {
-        // Python bridge is the real data source — never reset the intro state machine.
-        // Just retry WS silently in background.
-        scheduleReconnect();
-      } else {
-        if (introStage === "connecting" || introStage === "connected") {
-          setIntroStage("connecting");
-        }
-        scheduleReconnect();
+      if (introStage === "connecting" || introStage === "connected") {
+        setIntroStage("connecting");
       }
+      scheduleReconnect();
     }
   });
 
   ws.addEventListener("error", () => {
     if (introStage === "done") {
-      if (!_pythonBridgeReady) {
-        finishMapTransition();
-        applyLoading("tosu offline");
-      }
+      finishMapTransition();
+      applyLoading("tosu offline");
     }
     // In intro stages the close event fires next and handles reconnect
   });
@@ -2656,7 +2490,6 @@ document.addEventListener("keydown", async (e) => {
 
 let introStage = "connecting"; // "connecting" | "connected" | "splash" | "whats_new" | "hint" | "hint2" | "hint3" | "hint4" | "hint_settings" | "tutorial_prompt" | "done"
 let _wsOpenedEarly = false;    // WS connected while still in splash
-let _pythonBridgeReady = false;  // Python bridge sent bridge-init; never reset by WS events
 
 const _SPLASH_EXIT_MS = 3500;  // fade-out starts this many ms after boot
 const _SPLASH_FADE_MS = 700;   // duration of the splash fade
@@ -2714,16 +2547,10 @@ function _updateOsuStatus() {
   }
 }
 
-async function _checkOsuRunning() {
-  try {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.check_osu_running) {
-      _osuRunning = await window.pywebview.api.check_osu_running();
-    } else {
-      _osuRunning = false;
-    }
-  } catch (_e) {
-    _osuRunning = false;
-  }
+function _checkOsuRunning() {
+  // tosu only serves beatmap data while osu! is running, so an open socket is
+  // our osu!-presence signal (no desktop bridge available in a tosu counter).
+  _osuRunning = !!(ws && ws.readyState === WebSocket.OPEN);
   _updateOsuStatus();
   _checkAndAdvanceConnection();
 }
@@ -2959,12 +2786,6 @@ function setIntroStage(stage) {
 /* ── Boot ────────────────────────────────────────────────────────── */
 
 function boot() {
-  const isPythonBridge = typeof window.__overlayFromPython === 'function';
-  if (!isPythonBridge) {
-    window.__overlayFromPython = applyFromPythonBridge;
-  }
-  bridgeMode = typeof window.__overlayFromPython === 'function';
-
   setTickerText(ui.mapTicker, "Waiting for beatmap from tosu...");
   setTickerText(ui.statsTicker, "BPM -- · TIME --:-- · NOTES -- · LN -- · OD -- · HP -- · MAPPER --");
 
@@ -2973,11 +2794,11 @@ function boot() {
   if (skipIntro) {
     localStorage.removeItem("danOverlay_skipIntro");
     if (splashEl) splashEl.classList.add("hidden");
-    // Hide connect screen on reload — bridge will already be live.
+    // Hide connect screen on reload — the socket reconnects immediately.
     if (connectEl) connectEl.classList.add("hidden");
     introStage = "connecting";
   } else {
-    // Initialize the connect screen visuals before the bridge-init arrives.
+    // Show the connect screen until the socket opens.
     _showSearching();
     setIntroStage("connecting");
   }
@@ -3213,31 +3034,17 @@ document.addEventListener("keydown", (e) => {
     const panel = document.getElementById("danPanel");
     const isExpanded = panel?.classList.contains("is-expanded");
     if (_CURRENT_SKIN === "4") {
-      if (window.pywebview?.api?.set_window_size) {
-        window.pywebview.api.set_window_size(284, isExpanded ? 466 : 335);
-      }
       document.documentElement.style.zoom = 0.61;
-      if (typeof showToast === "function") showToast(isExpanded ? "Reset: 284×466 ◱" : "Reset: 284×335 ◱");
+      if (typeof showToast === "function") showToast("Scale reset ◱");
     } else if (_CURRENT_SKIN === "5") {
-      if (window.pywebview?.api?.set_window_size) {
-        window.pywebview.api.set_window_size(589, isExpanded ? 272 : 170);
-      }
       document.documentElement.style.zoom = 0.75;
-      if (typeof window._resetP2ResizeStates === "function") {
-        window._resetP2ResizeStates();
-      }
-      if (typeof showToast === "function") showToast(isExpanded ? "Reset: 589×272 ◱" : "Reset: 589×170 ◱");
+      if (typeof showToast === "function") showToast("Scale reset ◱");
     } else if (_CURRENT_SKIN === "6") {
-      if (window.pywebview?.api?.set_window_size) {
-        window.pywebview.api.set_window_size(645, isExpanded ? 297 : 211);
-      }
       document.documentElement.style.zoom = 0.73;
-      if (typeof showToast === "function") showToast(isExpanded ? "Reset: 645×297 ◱" : "Reset: 645×211 ◱");
+      if (typeof showToast === "function") showToast("Scale reset ◱");
     } else {
-      if (window.pywebview?.api?.reset_window_size) {
-        window.pywebview.api.reset_window_size();
-      }
-      if (typeof showToast === "function") showToast("Reset: 700×320 ◱");
+      document.documentElement.style.zoom = "";
+      if (typeof showToast === "function") showToast("Scale reset ◱");
     }
     // Also reset layout to full (for skins that use classic layout modes)
     _layoutMode = "complete";
@@ -3256,10 +3063,6 @@ document.addEventListener("keydown", (e) => {
   _resizeMode = nextMode;
   _updateHintLabel();
   adaptZoom();
-
-  if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.set_resize_mode === "function") {
-    window.pywebview.api.set_resize_mode(_resizeMode);
-  }
 
   const label = _resizeMode === "locked"
     ? "Resize: Locked ◈ (proportional)"
@@ -3342,23 +3145,6 @@ document.addEventListener("keydown", (e) => {
     showModeAnnounce("LN Course \u25C8", "ln_course");
   }
   if (_lastAnalysisPayload) _renderAnalysisPayload(_lastAnalysisPayload);
-});
-
-// Tab — toggle whether the overlay stays pinned above osu
-document.addEventListener("keydown", (e) => {
-  if (_cfgIsOpen()) return;
-  if (!isKeybind("overlay_pin", e)) return;
-  e.preventDefault();
-  if (window.pywebview?.api?.toggle_overlay_pin) {
-    window.pywebview.api.toggle_overlay_pin().then((isPinned) => {
-      if (typeof showToast === "function") {
-        showToast(isPinned
-          ? "Overlay pin ON — stays above osu ◈"
-          : "Overlay pin OFF — normal window order ◱"
-        );
-      }
-    });
-  }
 });
 
 /* Responsive Zooming and Performance Scaling for High Resolutions */
@@ -3550,9 +3336,6 @@ function _formatKeybind(kb) {
   return parts.join("+");
 }
 
-let _cfgPrevHeight = null;
-let _cfgPrevWidth = null;
-const _CFG_OPEN_HEIGHT = 620;
 let _isOpeningSettings = false;
 
 async function _openSettings() {
@@ -3560,39 +3343,6 @@ async function _openSettings() {
   const overlay = document.getElementById("cfgOverlay");
   if (!overlay) return;
   _isOpeningSettings = true;
-  // Capture the *actual* window dimensions before expanding, so we can restore
-  // them exactly and show the real values in the Window Size fields.
-  // PyWebView window dimensions can be stale/cached on Windows.
-  // Use JS layout outer calculations instead.
-  const isFrameless = _settings && _settings.frameless;
-  _cfgPrevWidth = isFrameless ? window.innerWidth : (window.innerWidth + 16);
-  _cfgPrevHeight = isFrameless ? window.innerHeight : (window.innerHeight + 39);
-
-  // Expand window dimensions to comfortably fit settings panel if narrow or short
-  if (window.pywebview?.api?.set_window_size) {
-    const curH = _cfgPrevHeight ?? 0;
-    const curW = _cfgPrevWidth ?? 0;
-
-    let targetW = -1;
-    let targetH = -1;
-
-    if (curW > 0 && curW < 580) {
-      targetW = 580;
-    } else {
-      _cfgPrevWidth = null; // No need to restore width if we didn't expand it
-    }
-
-    if (curH > 0 && curH < _CFG_OPEN_HEIGHT) {
-      targetH = _CFG_OPEN_HEIGHT;
-    } else {
-      _cfgPrevHeight = null; // No need to restore height if we didn't expand it
-    }
-
-    if (targetW !== -1 || targetH !== -1) {
-      window.pywebview.api.set_window_size(targetW, targetH);
-    }
-  }
-
   _renderCfgPanel();
   overlay.classList.add("is-open");
   overlay.setAttribute("aria-hidden", "false");
@@ -3605,16 +3355,6 @@ function _closeSettings() {
   _cancelKeybindCapture();
   overlay.classList.remove("is-open");
   overlay.setAttribute("aria-hidden", "true");
-
-  // Restore window to pre-settings dimensions if we expanded them.
-  const targetW = (_cfgPrevWidth !== null) ? _cfgPrevWidth : -1;
-  const targetH = (_cfgPrevHeight !== null) ? _cfgPrevHeight : -1;
-
-  if ((targetW !== -1 || targetH !== -1) && window.pywebview?.api?.set_window_size) {
-    window.pywebview.api.set_window_size(targetW, targetH);
-  }
-  _cfgPrevHeight = null;
-  _cfgPrevWidth = null;
 }
 
 function _renderCfgPanel() {
@@ -3657,49 +3397,7 @@ function _renderCfgPanel() {
   if (skinSel) skinSel.value = _settings.skin;
   const rdSel = document.getElementById("cfgRatingDisplay");
   if (rdSel) rdSel.value = _ratingDisplay;
-  // Window size inputs — populate with current dimensions from Python
-  _populateWindowSizeInputs();
   _renderKeybindRows();
-}
-
-async function _populateWindowSizeInputs() {
-  const wEl = document.getElementById("cfgWinWidth");
-  const hEl = document.getElementById("cfgWinHeight");
-  if (!wEl || !hEl) return;
-  // Use captured dimensions from before settings panel expansion,
-  // or fall back to saved settings, then to Python API, then to defaults.
-  const savedW = _settings.windowWidth;
-  const savedH = _settings.windowHeight;
-
-  if (savedW) {
-    wEl.value = savedW;
-  } else if (_cfgPrevWidth) {
-    wEl.value = _cfgPrevWidth;
-  } else {
-    if (_CURRENT_SKIN === "4") wEl.value = 284;
-    else if (_CURRENT_SKIN === "5") wEl.value = 589;
-    else if (_CURRENT_SKIN === "6") wEl.value = 645;
-    else wEl.value = 700;
-  }
-
-  if (savedH) {
-    hEl.value = savedH;
-  } else if (_cfgPrevHeight) {
-    hEl.value = _cfgPrevHeight;
-  } else {
-    if (_CURRENT_SKIN === "4") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      hEl.value = isExp ? 466 : 335;
-    } else if (_CURRENT_SKIN === "5") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      hEl.value = isExp ? 272 : 170;
-    } else if (_CURRENT_SKIN === "6") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      hEl.value = isExp ? 297 : 211;
-    } else {
-      hEl.value = 320;
-    }
-  }
 }
 
 function _setKeybindButtonIdle(action, badge, btn) {
@@ -3821,41 +3519,22 @@ function _initCfgListeners() {
     _applySettings();
     _closeSettings();
   });
-  document.getElementById("cfgSave")?.addEventListener("click", async () => {
+  document.getElementById("cfgSave")?.addEventListener("click", () => {
     const skinChanged = _settings.skin !== _CURRENT_SKIN;
-    // Read window size directly from DOM (change event may not have fired yet)
-    const winW = document.getElementById("cfgWinWidth");
-    const winH = document.getElementById("cfgWinHeight");
-    const newW = winW ? parseInt(winW.value) : null;
-    const newH = winH ? parseInt(winH.value) : null;
-    if (newW && newH) { _settings.windowWidth = newW; _settings.windowHeight = newH; }
-    await _saveSettings();
-    // Apply window size (null = use default 700x320)
-    if (newW && newH && window.pywebview?.api?.set_window_size) {
-      window.pywebview.api.set_window_size(newW, newH);
-      // Prevent _closeSettings from restoring the pre-settings height
-      // since the user explicitly chose a new window size.
-      _cfgPrevHeight = null;
-    }
+    _saveSettings();
     _closeSettings();
     if (skinChanged) {
-      // Ask Python to navigate the webview to the correct skin HTML.
-      // Using pywebview.load_url() ensures the bridge is re-established.
+      // Navigate to the selected skin's HTML; skip the intro on reload.
       localStorage.setItem("danOverlay_skipIntro", "1");
       showToast("Reloading with new skin\u2026", 1500);
       setTimeout(() => {
-        if (window.pywebview?.api?.switch_skin) {
-          window.pywebview.api.switch_skin(_settings.skin);
-        } else {
-          // Fallback for dev mode (no Python)
-          const base = window.location.href
-            .replace(/\/ui-\d+\/index\.html([?#].*)?$/, '')
-            .replace(/\/index\.html([?#].*)?$/, '');
-          const newUrl = _settings.skin !== "1"
-            ? base + "/ui-" + _settings.skin + "/index.html"
-            : base + "/index.html";
-          window.location.href = newUrl;
-        }
+        const base = window.location.href
+          .replace(/\/ui-\d+\/index\.html([?#].*)?$/, '')
+          .replace(/\/index\.html([?#].*)?$/, '');
+        const newUrl = _settings.skin !== "1"
+          ? base + "/ui-" + _settings.skin + "/index.html"
+          : base + "/index.html";
+        window.location.href = newUrl;
       }, 1600);
     } else {
       showToast("Settings saved \u2713", 2000);
@@ -4026,71 +3705,8 @@ function _initCfgListeners() {
   if (skinSel) {
     skinSel.addEventListener("change", () => {
       _settings.skin = skinSel.value;
-
-      // Automatically update the window size inputs in settings panel to the new skin's defaults
-      let defaultW = 700;
-      let defaultH = 320;
-      if (_settings.skin === "4") {
-        const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-        defaultW = 284;
-        defaultH = isExp ? 466 : 335;
-      } else if (_settings.skin === "5") {
-        const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-        defaultW = 589;
-        defaultH = isExp ? 272 : 170;
-      } else if (_settings.skin === "6") {
-        const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-        defaultW = 645;
-        defaultH = isExp ? 297 : 211;
-      }
-
-      const winW = document.getElementById("cfgWinWidth");
-      const winH = document.getElementById("cfgWinHeight");
-      if (winW) winW.value = defaultW;
-      if (winH) winH.value = defaultH;
-
-      // Clear custom dimensions so the new skin uses its native defaults/zoom on reload
-      _settings.windowWidth = null;
-      _settings.windowHeight = null;
     });
   }
-
-  // Window size inputs — store values on change, apply on Save
-  const winW = document.getElementById("cfgWinWidth");
-  const winH = document.getElementById("cfgWinHeight");
-  if (winW) winW.addEventListener("change", () => {
-    _settings.windowWidth = Math.max(300, parseInt(winW.value) || 700);
-  });
-  if (winH) winH.addEventListener("change", () => {
-    _settings.windowHeight = Math.max(80, parseInt(winH.value) || 320);
-  });
-  // Reset button — restore default window size
-  const resetWinBtn = document.getElementById("cfgResetWinSize");
-  if (resetWinBtn) resetWinBtn.addEventListener("click", () => {
-    let defaultW = 700;
-    let defaultH = 320;
-    if (_CURRENT_SKIN === "4") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      defaultW = 284;
-      defaultH = isExp ? 466 : 335;
-    } else if (_CURRENT_SKIN === "5") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      defaultW = 589;
-      defaultH = isExp ? 272 : 170;
-      if (typeof window._resetP2ResizeStates === "function") {
-        window._resetP2ResizeStates();
-      }
-    } else if (_CURRENT_SKIN === "6") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      defaultW = 645;
-      defaultH = isExp ? 297 : 211;
-    }
-    if (winW) winW.value = defaultW;
-    if (winH) winH.value = defaultH;
-    _settings.windowWidth = null;
-    _settings.windowHeight = null;
-    showToast(`Window size reset to default (${defaultW}×${defaultH}). Press Save to apply.`, 2500);
-  });
 
   // Green screen toggle
   const greenScreenChk = document.getElementById("cfgGreenScreenChk");
@@ -4297,32 +3913,12 @@ function _updateDensityProgress(currentMs) {
   await _loadSettings();
   _layoutMode = _settings.layout || "complete";
   _applySettings();
-  let w = _settings.windowWidth;
-  let h = _settings.windowHeight;
-  const isLegacyDefault = (w === 700 && h === 320) || (w === 860 && h === 320);
-  if (isLegacyDefault && (_CURRENT_SKIN === "4" || _CURRENT_SKIN === "5" || _CURRENT_SKIN === "6")) {
-    w = null;
-    h = null;
-  }
   if (_CURRENT_SKIN === "4") {
     document.documentElement.style.zoom = 0.61;
   } else if (_CURRENT_SKIN === "5") {
     document.documentElement.style.zoom = 0.75;
   } else if (_CURRENT_SKIN === "6") {
     document.documentElement.style.zoom = 0.73;
-  }
-  if (w && h && window.pywebview?.api?.set_window_size) {
-    window.pywebview.api.set_window_size(w, h);
-  } else if (!w && !h && window.pywebview?.api?.set_window_size) {
-    if (_CURRENT_SKIN === "4") {
-      window.pywebview.api.set_window_size(284, 335);
-    } else if (_CURRENT_SKIN === "5") {
-      window.pywebview.api.set_window_size(589, 170);
-    } else if (_CURRENT_SKIN === "6") {
-      window.pywebview.api.set_window_size(645, 211);
-    } else {
-      window.pywebview.api.set_window_size(700, 320);
-    }
   }
   _applyLayoutMode(true);
   _initCfgListeners();
