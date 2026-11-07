@@ -50,19 +50,6 @@
 
       <!-- ── Mode picker: shown on every launch ────────────────── -->
 
-      <!-- ── Tutorial prompt (first 2 launches only) ─────────── -->
-      <div class="hint-screen hidden" id="tutorialPromptScreen">
-        <div class="hint-inner">
-          <div class="hint-title">DANOVERLAY — QUICK SETUP</div>
-          <p class="tut-prompt-question">Would you like to see a quick tutorial<br>on resize modes and scoring modes?</p>
-          <div class="tut-prompt-btns">
-            <button class="hint-btn tut-btn-yes"   id="tutYesBtn"   type="button">Yes</button>
-            <button class="hint-btn tut-btn-no"    id="tutNoBtn"    type="button">Skip</button>
-            <button class="hint-btn tut-btn-never" id="tutNeverBtn" type="button">Don’t show again</button>
-          </div>
-        </div>
-      </div>
-
       <!-- ── What's New screen (auto-advance after splash) ────── -->
       <div class="hint-screen hidden" id="whatsNewScreen">
         <div class="hint-inner">
@@ -443,21 +430,6 @@
             </div>
           </section>
           <section>
-            <p class="cfg-section-title">Window Size</p>
-            <div class="cfg-row">
-              <label class="cfg-label" for="cfgWinWidth">Width (px)</label>
-              <input type="number" class="cfg-num cfg-win-size" id="cfgWinWidth" min="300" max="8000" step="1" placeholder="Width">
-            </div>
-            <div class="cfg-row">
-              <label class="cfg-label" for="cfgWinHeight">Height (px)</label>
-              <input type="number" class="cfg-num cfg-win-size" id="cfgWinHeight" min="80" max="8000" step="1" placeholder="Height">
-            </div>
-            <div class="cfg-row">
-              <label class="cfg-label"></label>
-              <button class="cfg-btn cfg-cancel" id="cfgResetWinSize" type="button">Reset to Default (700×320)</button>
-            </div>
-          </section>
-          <section>
             <p class="cfg-section-title">Skin</p>
             <div class="cfg-row">
               <label class="cfg-label" for="cfgSkinSelect">Design</label>
@@ -468,6 +440,18 @@
                 <option value="4">Vertical Monolith</option>
                 <option value="5">Broadcast Bar</option>
                 <option value="6">Dark Vignette</option>
+              </select>
+            </div>
+          </section>
+
+          <section>
+            <p class="cfg-section-title">Display</p>
+            <div class="cfg-row">
+              <label class="cfg-label" for="cfgRatingDisplay">Rating value</label>
+              <select class="cfg-select" id="cfgRatingDisplay">
+                <option value="both">Both (MSD + Quaver)</option>
+                <option value="msd">MSD only</option>
+                <option value="quaver">Quaver only</option>
               </select>
             </div>
           </section>
@@ -503,9 +487,11 @@
     <canvas id="exportCanvas" width="1800" height="980"></canvas>
   </div>
 
-  <script src="engine/minacalc.js?v=3"></script>
-  <script src="engine/minacalc-glue.js?v=3"></script>
-  <script src="engine/danEngine.js?v=3"></script>
-  <script src="overlay.js?v=3"></script>
+  <script src="engine/minacalc.js?v=8"></script>
+  <script src="engine/minacalc-glue.js?v=8"></script>
+  <script src="engine/dancalc-glue.js?v=8"></script>
+  <script src="engine/danEngine.js?v=8"></script>
+  <script src="graph/chart_renderer.js?v=8"></script>
+  <script src="overlay.js?v=8"></script>
 </body>
 </html>

@@ -57,19 +57,6 @@
         <span class="loading-bar" aria-hidden="true"></span>
       </div>
 
-      <!-- ── Tutorial prompt (first 2 launches only) ─────────── -->
-      <div class="hint-screen hidden" id="tutorialPromptScreen">
-        <div class="hint-inner">
-          <div class="hint-title">DANOVERLAY — QUICK SETUP</div>
-          <p class="tut-prompt-question">Would you like to see a quick tutorial<br>on resize modes and scoring modes?</p>
-          <div class="tut-prompt-btns">
-            <button class="hint-btn tut-btn-yes"   id="tutYesBtn"   type="button">Yes</button>
-            <button class="hint-btn tut-btn-no"    id="tutNoBtn"    type="button">Skip</button>
-            <button class="hint-btn tut-btn-never" id="tutNeverBtn" type="button">Don't show again</button>
-          </div>
-        </div>
-      </div>
-
       <!-- ── What's New screen (auto-advance after splash) ────── -->
       <div class="hint-screen hidden" id="whatsNewScreen">
         <div class="hint-inner">
@@ -496,8 +483,12 @@
 
   </main>
 
-  <!-- overlay.js is one level up — same script, different skin -->
-  <script src="../overlay.js"></script>
+  <!-- engine assets (one level up), then overlay.js — same scripts, different skin -->
+  <script src="../engine/minacalc.js?v=7"></script>
+  <script src="../engine/minacalc-glue.js?v=7"></script>
+  <script src="../engine/danEngine.js?v=7"></script>
+  <script src="../graph/chart_renderer.js?v=7"></script>
+  <script src="../overlay.js?v=7"></script>
 
   <!-- Ghost badge sync: mirrors real badge values to the scroll ghost copy
        so the looping animation always shows up-to-date values.

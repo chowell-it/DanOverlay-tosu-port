@@ -213,7 +213,7 @@ var DanEngine = (() => {
     let rejectionReason = null;
     if (p.rejected) rejectionReason = `parser rejected: mode=${mode}, keycount=${keycount}`;
     if (mode !== 3) rejectionReason = rejectionReason ?? `not mania mode (mode=${mode})`;
-    if (!is4k && !is7k) rejectionReason = rejectionReason ?? `not 4K or 7K (keycount=${keycount})`;
+    if (!is4k && !is7k && keycount !== 6 && keycount !== 8) rejectionReason = rejectionReason ?? `not 4K, 6K, 7K or 8K (keycount=${keycount})`;
     if (noteCount < 20) rejectionReason = rejectionReason ?? `too few notes (${noteCount})`;
     if (drainTimeS < 5) rejectionReason = rejectionReason ?? `drain too short (${drainTimeS.toFixed(1)}s)`;
     const lnConfidence = lnConfidenceBand(lnRatio);
@@ -922,11 +922,11 @@ var DanEngine = (() => {
   function computeCandKs(K, T, noteSeq, keyUsage, baseCorners) {
     const N = baseCorners.length;
     const noteHitTimes = Float64Array.from(noteSeq.map((n) => n[1]).sort((a, b) => a - b));
-    const C = zeros(N);
+    const C2 = zeros(N);
     for (let i = 0; i < N; i++) {
       const lo = searchsorted(noteHitTimes, baseCorners[i] - 500, "left");
       const hi = searchsorted(noteHitTimes, baseCorners[i] + 500, "left");
-      C[i] = hi - lo;
+      C2[i] = hi - lo;
     }
     const Ks = zeros(N);
     for (let i = 0; i < N; i++) {
@@ -934,7 +934,7 @@ var DanEngine = (() => {
       for (let k = 0; k < K; k++) s += keyUsage[k][i];
       Ks[i] = Math.max(s, 1);
     }
-    return { C, Ks };
+    return { C: C2, Ks };
   }
   function calculateText(raw, mod) {
     return calculateFromParsed(parseOsuText(raw), mod);
@@ -959,8 +959,8 @@ var DanEngine = (() => {
     const Pbar = interp(allCorners, baseCorners, PbarBase);
     const AbarBase = computeAbar(K, T, x, noteSeqByColumn, activeColumns, deltaKs, aCorners, baseCorners);
     const Abar = interp(allCorners, aCorners, AbarBase);
-    const { C, Ks } = computeCandKs(K, T, noteSeq, keyUsage, baseCorners);
-    const Carr = stepInterp(allCorners, baseCorners, C);
+    const { C: C2, Ks } = computeCandKs(K, T, noteSeq, keyUsage, baseCorners);
+    const Carr = stepInterp(allCorners, baseCorners, C2);
     const Ksarr = stepInterp(allCorners, baseCorners, Ks);
     const N = allCorners.length;
     const Sall = zeros(N), Tall = zeros(N), Dall = zeros(N);
@@ -4189,6 +4189,312 @@ var DanEngine = (() => {
     return { mode: "7k", tier_7k: tier7k, sublevel_7k: sub, dp_7k: dp7k, sr: round9(sr, 2) };
   }
 
+  // port/src/quaver.ts
+  var C = {
+    LnEndThresholdMs: 42,
+    ChordClumpToleranceMs: 8,
+    SJackLowerBoundaryMs: 40,
+    SJackUpperBoundaryMs: 320,
+    SJackMaxStrainValue: 68,
+    SJackCurveExponential: 1.17,
+    TJackLowerBoundaryMs: 40,
+    TJackUpperBoundaryMs: 330,
+    TJackMaxStrainValue: 70,
+    TJackCurveExponential: 1.14,
+    RollLowerBoundaryMs: 30,
+    RollUpperBoundaryMs: 230,
+    RollMaxStrainValue: 55,
+    RollCurveExponential: 1.13,
+    BracketLowerBoundaryMs: 30,
+    BracketUpperBoundaryMs: 230,
+    BracketMaxStrainValue: 56,
+    BracketCurveExponential: 1.13,
+    LnBaseMultiplier: 0.6,
+    LnLayerToleranceMs: 60,
+    LnLayerThresholdMs: 93.7,
+    LnReleaseAfterMultiplier: 1,
+    LnReleaseBeforeMultiplier: 1.3,
+    LnTapMultiplier: 1.05,
+    VibroActionDurationMs: 88.2,
+    VibroActionToleranceMs: 88.2,
+    VibroMultiplier: 0.75,
+    VibroLengthMultiplier: 0.3,
+    VibroMaxLength: 6,
+    RollRatioToleranceMs: 2,
+    RollRatioMultiplier: 0.25,
+    RollLengthMultiplier: 0.6,
+    RollMaxLength: 14
+  };
+  var SECONDS_TO_MS = 1e3;
+  function laneToHand(lane, keyCount) {
+    const half = Math.trunc(keyCount / 2);
+    if (keyCount % 2 === 0) return lane <= half ? 0 : 1;
+    if (lane <= half) return 0;
+    if (lane === half + 1) return 2;
+    return 1;
+  }
+  function laneToFinger(lane, keyCount) {
+    const half = Math.trunc(keyCount / 2);
+    if (keyCount <= 9) {
+      if (keyCount % 2 === 0) return lane <= half ? 1 << half - lane : 1 << lane - (half + 1);
+      if (lane <= half) return 1 << half - lane;
+      if (lane === half + 1) return 16;
+      return 1 << lane - (half + 2);
+    }
+    if (keyCount === 10) {
+      if (lane <= half - 1) return 1 << half - 1 - lane;
+      if (lane === half || lane === half + 1) return 16;
+      return 1 << lane - (half + 2);
+    }
+    return 0;
+  }
+  function newSData(h, rate) {
+    return {
+      hitObjects: [h],
+      next: null,
+      startTime: h.start / rate,
+      endTime: h.end / rate,
+      actionCoeff: 1,
+      patternMult: 1,
+      rollManipMult: 1,
+      jackManipMult: 1,
+      totalStrain: 0,
+      hand: 0,
+      fingerAction: 0,
+      fingerActionDurMs: 0,
+      fingerState: 0
+    };
+  }
+  var handChord = (d) => d.hitObjects.length > 1;
+  function getCoefficient(duration, xMin, xMax, strainMax, exp, avgDensity) {
+    const lowestDifficulty = 1, densityMultiplier = 0.266, densityDifficultyMin = 0.4;
+    const ratio = Math.max(0, 1 - (duration - xMin) / (xMax - xMin));
+    if (ratio === 0 && avgDensity < 4) {
+      if (avgDensity < 1) return densityDifficultyMin;
+      return avgDensity * densityMultiplier + 0.134;
+    }
+    return lowestDifficulty + (strainMax - lowestDifficulty) * Math.pow(ratio, exp);
+  }
+  function mapXToCol2(x, K) {
+    let xc = x;
+    if (x < 0) xc = 0;
+    else if (x >= 512) xc = 511;
+    return Math.min(Math.trunc(xc * K / 512), K - 1);
+  }
+  function buildInputFromText(raw) {
+    const lines = raw.split(/\r\n|\r|\n/);
+    let K = 4, section = "";
+    const hits = [];
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (line[0] === "[" && line.endsWith("]")) {
+        section = line;
+        continue;
+      }
+      if (section === "[Difficulty]") {
+        if (line.startsWith("CircleSize:")) {
+          const v = parseFloat(line.split(/:(.*)/s)[1]);
+          if (!Number.isNaN(v)) K = Math.max(1, Math.round(v));
+        }
+      } else if (section === "[HitObjects]") {
+        const p = line.split(",");
+        if (p.length < 4) continue;
+        const x = Math.trunc(parseFloat(p[0])), t = Math.trunc(parseFloat(p[2])), type = Math.trunc(parseFloat(p[3]));
+        if (Number.isNaN(x) || Number.isNaN(t)) continue;
+        const lane = mapXToCol2(x, K) + 1;
+        let end = 0;
+        if (type & 128 && p.length >= 6) {
+          const e = Math.trunc(parseFloat(p[5].split(":")[0]));
+          if (!Number.isNaN(e) && e > t) end = e;
+        }
+        hits.push({ lane, start: t, end });
+      }
+    }
+    hits.sort((a, b) => a.start - b.start);
+    let length = 0;
+    for (const h of hits) length = Math.max(length, h.start, h.end);
+    return { hits, keyCount: K, length, count: hits.length };
+  }
+  function computeForHand(inp, rate, assumeHand, sd) {
+    const avgDensity = SECONDS_TO_MS * inp.count / (inp.length * (-0.5 * rate + 1.5));
+    for (const h of inp.hits) {
+      const hb = { lane: h.lane, start: h.start, end: h.end, fingerState: laneToFinger(h.lane, inp.keyCount), lnLayerType: 0, lnStrainMult: 1, strainValue: 0 };
+      const d = newSData(hb, rate);
+      const hand = laneToHand(h.lane, inp.keyCount);
+      d.hand = hand === 2 ? assumeHand : hand;
+      sd.push(d);
+    }
+    for (let i = 0; i < sd.length - 1; i++) {
+      for (let j = i + 1; j < sd.length; j++) {
+        const msDiff = sd[j].startTime - sd[i].startTime;
+        if (msDiff > C.ChordClumpToleranceMs) break;
+        if (Math.abs(msDiff) <= C.ChordClumpToleranceMs) {
+          if (sd[i].hand === sd[j].hand) {
+            for (const k of sd[j].hitObjects) {
+              let same = false;
+              for (const l of sd[i].hitObjects) if (l.fingerState === k.fingerState) same = true;
+              if (!same) sd[i].hitObjects.push(k);
+            }
+            sd.splice(j, 1);
+          }
+        }
+      }
+    }
+    for (const d of sd) for (const h of d.hitObjects) d.fingerState |= h.fingerState;
+    for (let i = 0; i < sd.length - 1; i++) {
+      const cur = sd[i];
+      for (let j = i + 1; j < sd.length; j++) {
+        const nxt = sd[j];
+        if (cur.hand === nxt.hand && nxt.startTime > cur.startTime) {
+          const jackFound = (cur.fingerState & nxt.fingerState) !== 0;
+          const chordFound = handChord(cur) || handChord(nxt);
+          const sameState = cur.fingerState === nxt.fingerState;
+          const dur = nxt.startTime - cur.startTime;
+          cur.next = nxt;
+          cur.fingerActionDurMs = dur;
+          if (!chordFound && !sameState) {
+            cur.fingerAction = 3;
+            cur.actionCoeff = getCoefficient(dur, C.RollLowerBoundaryMs, C.RollUpperBoundaryMs, C.RollMaxStrainValue, C.RollCurveExponential, avgDensity);
+          } else if (sameState) {
+            cur.fingerAction = 1;
+            cur.actionCoeff = getCoefficient(dur, C.SJackLowerBoundaryMs, C.SJackUpperBoundaryMs, C.SJackMaxStrainValue, C.SJackCurveExponential, avgDensity);
+          } else if (jackFound) {
+            cur.fingerAction = 2;
+            cur.actionCoeff = getCoefficient(dur, C.TJackLowerBoundaryMs, C.TJackUpperBoundaryMs, C.TJackMaxStrainValue, C.TJackCurveExponential, avgDensity);
+          } else {
+            cur.fingerAction = 4;
+            cur.actionCoeff = getCoefficient(dur, C.BracketLowerBoundaryMs, C.BracketUpperBoundaryMs, C.BracketMaxStrainValue, C.BracketCurveExponential, avgDensity);
+          }
+          break;
+        }
+      }
+    }
+    let manipIndex = 0;
+    for (const data of sd) {
+      let found = false;
+      if (data.next && data.next.next) {
+        const middle = data.next, last = data.next.next;
+        if (data.fingerAction === 3 && middle.fingerAction === 3 && data.fingerState === last.fingerState) {
+          const durationRatio = Math.max(data.fingerActionDurMs / middle.fingerActionDurMs, middle.fingerActionDurMs / data.fingerActionDurMs);
+          if (durationRatio >= C.RollRatioToleranceMs) {
+            const durMult = 1 / (1 + (durationRatio - 1) * C.RollRatioMultiplier);
+            const ratio = 1 - manipIndex / C.RollMaxLength * (1 - C.RollLengthMultiplier);
+            data.rollManipMult = durMult * ratio;
+            found = true;
+            if (manipIndex < C.RollMaxLength) manipIndex++;
+          }
+        }
+      }
+      if (!found && manipIndex > 0) manipIndex--;
+    }
+    let longJack = 0;
+    for (const data of sd) {
+      let found = false;
+      if (data.next) {
+        const next = data.next;
+        if (data.fingerAction === 1 && next.fingerAction === 1) {
+          const durVal = Math.min(1, Math.max(0, (C.VibroActionDurationMs + C.VibroActionToleranceMs - data.fingerActionDurMs) / C.VibroActionToleranceMs));
+          const durMult = 1 - durVal * (1 - C.VibroMultiplier);
+          const ratio = 1 - longJack / C.VibroMaxLength * (1 - C.VibroLengthMultiplier);
+          data.rollManipMult = durMult * ratio;
+          found = true;
+          if (longJack < C.VibroMaxLength) longJack++;
+        }
+      }
+      if (!found) longJack = 0;
+    }
+    for (const data of sd) {
+      if (data.endTime > data.startTime) {
+        const durVal = 1 - Math.min(1, Math.max(0, (C.LnLayerThresholdMs + C.LnLayerToleranceMs - (data.endTime - data.startTime)) / C.LnLayerToleranceMs));
+        const baseMult = 1 + durVal * C.LnBaseMultiplier;
+        for (const k of data.hitObjects) k.lnStrainMult = baseMult;
+        const next = data.next;
+        if (next) {
+          if (next.startTime < data.endTime - C.LnEndThresholdMs && next.startTime >= data.startTime + C.LnEndThresholdMs) {
+            if (next.endTime > data.endTime + C.LnEndThresholdMs) for (const k of data.hitObjects) {
+              k.lnLayerType = 2;
+              k.lnStrainMult *= C.LnReleaseAfterMultiplier;
+            }
+            else if (next.endTime > 0) for (const k of data.hitObjects) {
+              k.lnLayerType = 1;
+              k.lnStrainMult *= C.LnReleaseBeforeMultiplier;
+            }
+            else for (const k of data.hitObjects) {
+              k.lnLayerType = 3;
+              k.lnStrainMult *= C.LnTapMultiplier;
+            }
+          }
+        }
+      }
+    }
+    if (sd.length === 0) return 0;
+    for (const data of sd) {
+      for (const h of data.hitObjects) {
+        h.strainValue = data.actionCoeff * data.patternMult * data.rollManipMult * data.jackManipMult * h.lnStrainMult;
+        data.totalStrain += h.strainValue;
+      }
+      data.totalStrain /= data.hitObjects.length;
+    }
+    let calculatedDiff = sd.reduce((a, s) => a + s.totalStrain, 0) / sd.length;
+    const binSize = 1e3;
+    const mapStart = Math.min(...sd.map((s) => s.startTime));
+    const mapEnd = Math.max(...sd.map((s) => Math.max(s.startTime, s.endTime)));
+    const bins = [];
+    const useFallback = inp.keyCount % 2 === 1;
+    let leftIndex = 0, rightIndex = 0;
+    while (leftIndex < sd.length && sd[leftIndex].startTime < mapStart) leftIndex++;
+    for (let i = mapStart; i < mapEnd; i += binSize) {
+      let valuesInBin;
+      if (useFallback) {
+        valuesInBin = sd.filter((s) => s.startTime >= i && s.startTime < i + binSize);
+      } else {
+        while (rightIndex < sd.length - 1 && sd[rightIndex + 1].startTime < i + binSize) rightIndex++;
+        if (leftIndex >= sd.length) {
+          bins.push(0);
+          continue;
+        }
+        valuesInBin = sd.slice(leftIndex, rightIndex + 1);
+      }
+      const avg = valuesInBin.length > 0 ? valuesInBin.reduce((a, s) => a + s.totalStrain, 0) / valuesInBin.length : 0;
+      bins.push(avg);
+      leftIndex = rightIndex + 1;
+    }
+    if (!bins.some((s) => s > 0)) return 0;
+    const cutoffPos = Math.floor(bins.length * 0.4);
+    const top40 = [...bins].sort((a, b) => b - a).slice(0, cutoffPos);
+    const easyCutoff = top40.length ? top40.reduce((a, b) => a + b, 0) / top40.length : 0;
+    const nzBins = bins.filter((s) => s > 0);
+    const continuity = nzBins.reduce((a, s) => a + Math.sqrt(s / easyCutoff), 0) / nzBins.length;
+    const maxContinuity = 1, avgContinuity = 0.85, minContinuity = 0.6;
+    const maxAdj = 1.05, avgAdj = 1, minAdj = 0.9;
+    let contAdj;
+    if (continuity > avgContinuity) {
+      const f = 1 - (continuity - avgContinuity) / (maxContinuity - avgContinuity);
+      contAdj = Math.min(avgAdj, Math.max(minAdj, f * (avgAdj - minAdj) + minAdj));
+    } else {
+      const f = 1 - (continuity - minContinuity) / (avgContinuity - minContinuity);
+      contAdj = Math.min(maxAdj, Math.max(avgAdj, f * (maxAdj - avgAdj) + avgAdj));
+    }
+    calculatedDiff *= contAdj;
+    const maxShortAdj = 0.75, shortThreshold = 60 * SECONDS_TO_MS;
+    const trueDrain = bins.length * continuity * binSize;
+    const shortAdj = Math.min(1, Math.max(maxShortAdj, 0.25 * Math.sqrt(trueDrain / shortThreshold) + 0.75));
+    calculatedDiff *= shortAdj;
+    return calculatedDiff;
+  }
+  var MOD_RATE = { NM: 1, DT: 1.5, NC: 1.5, HT: 0.75 };
+  function estimateQuaver(osuText, mod = "NM") {
+    const rate = MOD_RATE[mod] ?? 1;
+    const inp = buildInputFromText(osuText);
+    if (inp.count < 2 || inp.length <= 0) return 0;
+    const sd = [];
+    let diff;
+    if (inp.keyCount % 2 === 0) diff = computeForHand(inp, rate, 1, sd);
+    else diff = (computeForHand(inp, rate, 0, sd) + computeForHand(inp, rate, 1, sd)) / 2;
+    return Math.round(diff * 100) / 100;
+  }
+
   // port/browser/danEngine.ts
   function computeMsd(osuText, mod) {
     const mc = globalThis.__MINACALC;
@@ -4203,9 +4509,60 @@ var DanEngine = (() => {
       skillsets: { stream: r2(o[1]), jumpstream: r2(o[2]), handstream: r2(o[3]), stamina: r2(o[4]), jackspeed: r2(o[5]), chordjack: r2(o[6]), technical: r2(o[7]) }
     };
   }
+  function buildNpsData(parsed) {
+    const times = (parsed.note_events || []).filter((e) => e.event_type !== "ln_end").map((e) => e.time_ms).sort((a, b) => a - b);
+    const empty = { nps_data: [], dominant_nps: 0, density_meta: { hop_ms: 250, segment_ms: 500 } };
+    if (!times.length) return empty;
+    const half = 250, durS = 0.5;
+    const bl = (v) => {
+      let lo = 0, hi = times.length;
+      while (lo < hi) {
+        const m = lo + hi >>> 1;
+        if (times[m] < v) lo = m + 1;
+        else hi = m;
+      }
+      return lo;
+    };
+    const br = (v) => {
+      let lo = 0, hi = times.length;
+      while (lo < hi) {
+        const m = lo + hi >>> 1;
+        if (times[m] <= v) lo = m + 1;
+        else hi = m;
+      }
+      return lo;
+    };
+    const out = [];
+    let sw = 0, sw2 = 0;
+    for (let t = times[0]; t <= times[times.length - 1]; t += 250) {
+      const nps = (br(t + half) - bl(t - half)) / durS;
+      out.push([t, nps]);
+      sw += nps;
+      sw2 += nps * nps;
+    }
+    return { nps_data: out, dominant_nps: sw > 0 ? sw2 / sw : 0, density_meta: { hop_ms: 250, segment_ms: 500 } };
+  }
   function analyze(osuText, mod = "NM", osuSr = 0) {
-    const domain = validateDomain(parsearOsuV2Text(osuText, true));
+    const parsed = parsearOsuV2Text(osuText, true);
+    const domain = validateDomain(parsed);
     if (!domain.valid) return { type: "analysis", error: domain.rejection_reason ?? "domain_rejected" };
+    if (!domain.is_4k && !domain.is_7k) {
+      return {
+        type: "analysis",
+        mode: "prism",
+        sr: calculateText(osuText, mod === "NC" ? "DT" : mod).sr,
+        bpm: domain.bpm,
+        od: domain.od,
+        duration_s: domain.drain_time_s,
+        note_count: domain.note_count,
+        osu_sr: osuSr || 0,
+        ...buildNpsData(parsed),
+        mod: mod === "NM" ? "" : mod,
+        mod_label: mod
+      };
+    }
+    const quaver_rating = estimateQuaver(osuText, mod);
+    const nps = buildNpsData(parsed);
     if (domain.is_7k) {
       const sr = calculateText(osuText, mod === "NC" ? "DT" : mod).sr;
       const k = sevenK(sr);
@@ -4220,11 +4577,13 @@ var DanEngine = (() => {
         mod_label: mod,
         overall_msd: 0,
         skillsets: null,
+        quaver_rating,
         celestial: null,
         signicial: null,
         shoegazer: null,
         ln_course: null,
-        osu_sr: osuSr || 0
+        osu_sr: osuSr || 0,
+        ...nps
       };
     }
     const r = analyzeReformText(osuText, mod);
@@ -4262,11 +4621,13 @@ var DanEngine = (() => {
       mod_label: mod,
       overall_msd: msd ? msd.overall : 0,
       skillsets: msd ? msd.skillsets : null,
+      quaver_rating,
       celestial: estimateCelestial(ss, r.sr, r.family),
       signicial: estimateSignicial(ss, r.sr, r.family),
       shoegazer: estimateShoegazer(ss, r.sr),
       ln_course: lnCourse,
-      osu_sr: osuSr || 0
+      osu_sr: osuSr || 0,
+      ...nps
     };
   }
   return __toCommonJS(danEngine_exports);

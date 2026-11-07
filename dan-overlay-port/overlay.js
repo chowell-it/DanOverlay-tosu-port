@@ -1,4 +1,7 @@
-const WS_URL = "ws://localhost:24050/ws";
+// tosu v2 socket with server-side filters — only the fields this counter reads
+// are sent, per the counters CONTRIBUTING websocket-filter requirement.
+const WS_FILTERS = "state,beatmap,play,resultsScreen,files";
+const WS_URL = "ws://localhost:24050/websocket/v2?filters=" + encodeURIComponent(WS_FILTERS);
 
 const DAN_PALETTES = {
   "1st Dan": ["rgb(118,199,255)", "rgb(231,244,255)"],
@@ -231,7 +234,6 @@ const ui = {
 
 let ws = null;
 let reconnectTimer = null;
-let bridgeMode = false;
 
 // Progress bar state variables
 let prog_wasPlaying = false;
@@ -412,6 +414,7 @@ let lastMapKey = "";
 // Current mod + osu! SR, stashed from WS for the in-browser engine call.
 let _curMod = "NM";
 let _curOsuSr = 0;
+const _MOD_RATE = { NM: 1, DT: 1.5, HT: 0.75 };
 function _modFromNum(n) { n = Number(n) || 0; if ((n & 64) || (n & 512)) return "DT"; if (n & 256) return "HT"; return "NM"; }
 let _lastAnalyzedKey = ""; // tosu-port: tracks which map we last fetched analysis for
 let _bgGeneration = 0;
@@ -433,6 +436,7 @@ const _DEFAULT_KEYBINDS = {
   mode_signicial: { key: "3", ctrl: true, alt: false },
   mode_shoegazer: { key: "4", ctrl: true, alt: false },
   mode_ln_course: { key: "5", ctrl: true, alt: false },
+  mode_prism: { key: "6", ctrl: true, alt: false },
   open_settings: { key: ",", ctrl: true, alt: false },
   layout_cycle: { key: "l", ctrl: false, alt: false },
 };
@@ -447,6 +451,7 @@ const _KEYBIND_LABELS = {
   mode_signicial: "Scoring mode: Signicial",
   mode_shoegazer: "Scoring mode: Shoegazer",
   mode_ln_course: "Scoring mode: LN Course",
+  mode_prism: "Scoring mode: Prism (7K)",
   open_settings: "Open settings panel",
   layout_cycle: "Cycle layout density",
 };
@@ -476,37 +481,12 @@ let _settings = {
   broadcastBorderThick: 1,   // 0-10px; border width in broadcast skin
   greenScreen: false, // replace map background with solid #00ff00 for chroma key
   frameless: false,   // remove OS title bar for clean OBS capture (requires restart)
-  neverShowTutorial: false,
-  windowWidth: null,   // explicit window width in px (null = use default / drag resize)
-  windowHeight: null,  // explicit window height in px
   keybinds: JSON.parse(JSON.stringify(_DEFAULT_KEYBINDS)),
 };
 
-async function _waitForPywebviewMethod(methodName, timeoutMs = 2000) {
-  if (!window.pywebview) return null;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const method = window.pywebview?.api?.[methodName];
-    if (typeof method === "function") {
-      return method.bind(window.pywebview.api);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return null;
-}
-
-async function _loadSettings() {
+function _loadSettings() {
   let raw = null;
-  try {
-    const loadSettingsApi = await _waitForPywebviewMethod("load_settings");
-    if (loadSettingsApi) {
-      raw = await loadSettingsApi();
-    }
-  } catch (_) { }
-  if (!raw) {
-    // Fallback: localStorage (dev mode or migration from older install)
-    try { raw = localStorage.getItem(_SETTINGS_KEY); } catch (_) { }
-  }
+  try { raw = localStorage.getItem(_SETTINGS_KEY); } catch (_) { }
   if (!raw) return;
   try {
     const saved = JSON.parse(raw);
@@ -517,9 +497,6 @@ async function _loadSettings() {
     if (typeof saved.danScale === "number") _settings.danScale = Math.max(0, Math.min(100, saved.danScale));
     if (typeof saved.greenScreen === "boolean") _settings.greenScreen = saved.greenScreen;
     if (typeof saved.frameless === "boolean") _settings.frameless = saved.frameless;
-    if (typeof saved.neverShowTutorial === "boolean") _settings.neverShowTutorial = saved.neverShowTutorial;
-    if (typeof saved.windowWidth === "number") _settings.windowWidth = saved.windowWidth;
-    if (typeof saved.windowHeight === "number") _settings.windowHeight = saved.windowHeight;
     if (typeof saved.layout === "string" && ["complete", "simplified", "compact"].includes(saved.layout))
       _settings.layout = saved.layout;
     if (saved.keybinds && typeof saved.keybinds === "object") {
@@ -535,17 +512,8 @@ async function _loadSettings() {
   } catch (_) { }
 }
 
-async function _saveSettings() {
-  const json = JSON.stringify(_settings);
-  // Always mirror to localStorage (dev/fallback)
-  try { localStorage.setItem(_SETTINGS_KEY, json); } catch (_) { }
-  // Primary: persist via Python to %APPDATA%\DanOverlay\settings.json
-  try {
-    const saveSettingsApi = await _waitForPywebviewMethod("save_settings");
-    if (saveSettingsApi) {
-      await saveSettingsApi(json);
-    }
-  } catch (_) { }
+function _saveSettings() {
+  try { localStorage.setItem(_SETTINGS_KEY, JSON.stringify(_settings)); } catch (_) { }
 }
 
 function _applySettings() {
@@ -584,7 +552,6 @@ function _applySettings() {
 
 /* ── Layout density modes ───────────────────────────────────────────── */
 const _LAYOUT_MODES = ["complete", "simplified", "compact"];
-const _LAYOUT_HEIGHTS = { complete: 320, simplified: 220, compact: 76 };
 let _layoutMode = "complete";
 
 function _applyLayoutMode(skipResize) {
@@ -594,15 +561,6 @@ function _applyLayoutMode(skipResize) {
   if (!panel) return;
   panel.classList.remove("layout-simplified", "layout-compact");
   if (_layoutMode !== "complete") panel.classList.add("layout-" + _layoutMode);
-  if (skipResize) return;
-  const h = _LAYOUT_HEIGHTS[_layoutMode];
-  
-  const isFrameless = _settings && _settings.frameless;
-  const currentOuterW = isFrameless ? window.innerWidth : (window.innerWidth + 16);
-  
-  if (window.pywebview?.api?.set_window_size) {
-    window.pywebview.api.set_window_size(currentOuterW, h);
-  }
 }
 
 function _cycleLayout() {
@@ -617,24 +575,6 @@ function _cycleLayout() {
     panel.classList.toggle("is-expanded");
     const isExp = panel.classList.contains("is-expanded");
     if (typeof showToast === "function") showToast(isExp ? "Map info: Expanded" : "Map info: Hidden", 1600);
-    
-    // Ignore the programmatic resize to prevent double-stretching the UI
-    window._ignoreNextP2Resize = true;
-    if (typeof window._resetP2ResizeStates === "function") window._resetP2ResizeStates();
-    
-    // PyWebView's _window.width can be stale on Windows, so we pass the accurate outerWidth from JS
-    const isFrameless = _settings && _settings.frameless;
-    const currentOuterW = isFrameless ? window.innerWidth : (window.innerWidth + 16);
-
-    if (_CURRENT_SKIN === "4" && window.pywebview?.api?.set_window_size) {
-      window.pywebview.api.set_window_size(currentOuterW, isExp ? 466 : 335);
-    } else if (_CURRENT_SKIN === "5" && window.pywebview?.api?.set_window_size) {
-      window.pywebview.api.set_window_size(currentOuterW, isExp ? 272 : 170);
-      document.documentElement.style.zoom = isExp ? 0.75 : 0.75;
-    } else if (_CURRENT_SKIN === "6" && window.pywebview?.api?.set_window_size) {
-      window.pywebview.api.set_window_size(currentOuterW, isExp ? 297 : 211);
-      document.documentElement.style.zoom = isExp ? 0.73 : 0.73;
-    }
     return;
   }
 
@@ -665,7 +605,7 @@ let _scoringMode = "reform";
 // tosu-port: pick up scoringMode from tosu settings URL injection or localStorage
 (function () {
   const p = new URLSearchParams(location.search).get("scoringMode");
-  const VALID = ["reform", "celestial", "signicial", "shoegazer"];
+  const VALID = ["reform", "celestial", "signicial", "shoegazer", "prism"];
   if (p && VALID.includes(p)) {
     _scoringMode = p;
   } else {
@@ -675,6 +615,32 @@ let _scoringMode = "reform";
     } catch (_) {}
   }
 })();
+// ── Rating display: "msd" | "quaver" | "both" (default) ───────────────────────
+let _ratingDisplay = "both";
+(function () {
+  const p = new URLSearchParams(location.search).get("ratingDisplay");
+  const VALID = ["msd", "quaver", "both"];
+  if (p && VALID.includes(p)) _ratingDisplay = p;
+  else { try { const ls = localStorage.getItem("danOverlay_ratingDisplay"); if (ls && VALID.includes(ls)) _ratingDisplay = ls; } catch (_) {} }
+})();
+// Returns the bottom readout {value,label} per ratingDisplay. Falls back to whichever
+// rating exists (7K has no MSD).
+function ratingReadout(payload) {
+  const msd = Number((payload && payload.overall_msd) || 0);
+  const qsr = Number((payload && payload.quaver_rating) || 0);
+  const fmsd = msd > 0 ? msd.toFixed(2) : "--.-";
+  const fqsr = qsr > 0 ? qsr.toFixed(2) : "--.-";
+  if (_ratingDisplay === "msd") return { value: fmsd, label: "MSD" };
+  if (_ratingDisplay === "quaver") return { value: fqsr, label: "QUAVER" };
+  if (msd <= 0 && qsr > 0) return { value: fqsr, label: "QUAVER" };
+  if (qsr <= 0 && msd > 0) return { value: fmsd, label: "MSD" };
+  return { value: `${fmsd} · ${fqsr}`, label: "MSD · QSR" };
+}
+function _applyRatingLabel(payload) {
+  const lbl = ratingReadout(payload).label;
+  document.querySelectorAll(".msd-unit").forEach((e) => { e.textContent = lbl; });
+}
+
 // LN auto-override: true when current map is LN-routed, reverts on next rice map
 let _lnOverrideActive = false;
 // LN manual pin: when true, LN Course mode stays forced regardless of pipeline
@@ -683,10 +649,51 @@ let _lnModePinned = false;
 // the user toggles mode without waiting for a new analysis result.
 let _lastAnalysisPayload = null;
 
+// ── Prism (Mania Tracker dan-calc, 6K-8K + 7K alt view) ─────────────────────
+// Mirrors the web extension's prismHeadline. 6K/8K always show Prism; 7K shows
+// its SR ruler unless Prism mode (Ctrl+6) is picked or the chart is LN.
+// Rice/LN split exists when the chart passes Mania Tracker's LN threshold;
+// LN view follows _lnOverrideActive (auto on LN charts, Ctrl+5 toggles).
+const _PRISM_SUB = ["--", "-", "", "+", "++"];
+const _PRISM_SUBLEVELS = ["Low", "Mid-Low", "Mid", "Mid-High", "High"];
+// Prism files its skillsets in MinaCalc's slots; these are Mania Tracker's names.
+const _PRISM_LBL = { Jumpstream: "CHORDSTREAM", Handstream: "BRACKET", Chordjack: "JACK",
+                     Technical: "TECH", Speed: "DELAY", LN: "LN" };
+const _PRISM_FAMILY = { CHORDSTREAM: "STREAM", BRACKET: "STAMINA", JACK: "JACK", TECH: "TECH" };
+function _prismSplit(t) { return !!(t && t.rice && t.ln && t.msd && t.msd.LN > 0); }
+function _prismIsLnMap(p) { const t = p && p.prism; return _prismSplit(t) && !!(t.primary && t.primary.ln); }
+function _prismPick(p) {
+  const t = p && p.prism;
+  if (!t) return null;
+  if (p.mode !== "prism" && _scoringMode !== "prism" && !_lnOverrideActive) return null;
+  if (!_prismSplit(t)) return { d: t.primary, kind: "", t };
+  return _lnOverrideActive ? { d: t.ln, kind: "LN", t } : { d: t.rice, kind: "Rice", t };
+}
+function _prismHeadline(pick) {
+  const d = pick.d;
+  if (!d) return { name: "No dan", sub: `No ${pick.t.key_count}K dan table`, dp: 0 };
+  const n = Number(d.label);
+  const name = Number.isNaN(n) ? d.label[0].toUpperCase() + d.label.slice(1)
+    : `${["0th", "1st", "2nd", "3rd"][n] || n + "th"} Dan`;
+  // raw steps by 0.2 around the tier (7-- = 6.6); DP keeps the tier as its whole
+  // part and the sublevel as its fraction, which the sublevel bars read.
+  const i = _PRISM_SUB.indexOf(d.variant || "");
+  return { name, sub: _PRISM_SUBLEVELS[i] + (pick.kind ? ` · ${pick.kind}` : ""),
+           dp: Math.round(d.raw - (i - 2) * 0.2) + 0.1 + i * 0.2 };
+}
+function _prismTop(msd) {
+  return Object.keys(_PRISM_LBL).map((k) => [_PRISM_LBL[k], Number(msd && msd[k]) || 0])
+    .filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 2).map((x) => x[0]);
+}
+
 function _updateScoringModeBadge() {
   const badge = document.getElementById("scoringModeBadge");
   if (!badge) return;
-  if (_lnOverrideActive) {
+  const pv = _prismPick(_lastAnalysisPayload);
+  if (pv) {
+    badge.textContent = `◈ Mode: Prism${pv.kind ? " " + pv.kind : ""}`;
+    badge.dataset.mode = "reform";
+  } else if (_lnOverrideActive) {
     badge.textContent = "♬ Mode: LN Course";
     badge.dataset.mode = "ln_course";
   } else if (_scoringMode === "celestial") {
@@ -753,10 +760,10 @@ function extractMapSupportInfo(payload) {
 
   if (!isMania) {
     supported = false;
-    reason = `Unsupported mode: ${modeToLabel(modeRaw)}. Please select an osu!mania 4K map.`;
-  } else if (keyCount != null && keyCount !== 4) {
+    reason = `Unsupported mode: ${modeToLabel(modeRaw)}. Please select an osu!mania 4K, 6K, 7K or 8K map.`;
+  } else if (keyCount != null && ![4, 6, 7, 8].includes(keyCount)) {
     supported = false;
-    reason = `Unsupported key mode: ${keyCount}K. Please select an osu!mania 4K map.`;
+    reason = `Unsupported key mode: ${keyCount}K. Please select an osu!mania 4K, 6K, 7K or 8K map.`;
   }
 
   return {
@@ -773,7 +780,7 @@ function applyUnsupportedMapWarning(info) {
   setChartButtonReady(false);
   setAnimatedText(ui.badgeLeft, "WARNING");
   setAnimatedText(ui.badgeCenter, "UNSUPPORTED MAP");
-  setAnimatedText(ui.badgeRight, "MANIA 4K ONLY");
+  setAnimatedText(ui.badgeRight, "MANIA 4K-8K ONLY");
 
   setAnimatedText(ui.danName, "---");
   setAnimatedText(ui.danSub, info.keyCount != null ? `${info.keyCount}K` : info.modeLabel);
@@ -784,7 +791,7 @@ function applyUnsupportedMapWarning(info) {
 
   // Update compact-bar left column with the warning message
   if (ui.mapTitle) ui.mapTitle.textContent = `${info.modeLabel}${info.keyCount != null ? ` ${info.keyCount}K` : ""} — Unsupported`;
-  if (ui.mapArtist) ui.mapArtist.textContent = "Please select an osu!mania 4K map";
+  if (ui.mapArtist) ui.mapArtist.textContent = "Please select an osu!mania 4K, 6K, 7K or 8K map";
 
   if (ui.progressWrap) {
     ui.progressWrap.classList.remove("showing", "paused", "finished");
@@ -798,6 +805,41 @@ function safeGet(obj, path, fallback = undefined) {
   } catch (_err) {
     return fallback;
   }
+}
+
+// Reshape a tosu /websocket/v2 message into the legacy v1 shape the rest of this
+// file reads (menu.bm.* / gameplay.* / resultsScreen.*). Keeps the v2 filter
+// benefit without rewriting every safeGet path. For mania, key count = CS.
+function normalizeV2(v2) {
+  if (!v2 || !v2.beatmap) return v2; // already v1-shaped or empty frame
+  const b = v2.beatmap, s = b.stats || {}, mode = b.mode?.number;
+  const keys = s.cs?.original;
+  return {
+    menu: {
+      state: v2.state?.number,
+      gameMode: mode,
+      mods: { num: v2.play?.mods?.number ?? 0 },
+      bm: {
+        md5: b.checksum,
+        mode,
+        metadata: {
+          artist: b.artist, title: b.title, mapper: b.mapper,
+          version: b.version, difficulty: b.version, mode,
+          keyCount: keys, keys,
+        },
+        stats: {
+          BPM: s.bpm?.common, HP: s.hp?.original, OD: s.od?.original,
+          SR: s.stars?.live, fullSR: s.stars?.total,
+          circles: s.objects?.circles, holds: s.objects?.holds,
+          keyCount: keys, keys,
+        },
+        time: { current: b.time?.live, full: b.time?.lastObject, mp3: b.time?.mp3Length },
+        path: { bg: v2.files?.background },
+      },
+    },
+    gameplay: { accuracy: v2.play?.accuracy },
+    resultsScreen: { accuracy: v2.resultsScreen?.accuracy },
+  };
 }
 
 function normalizeText(text) {
@@ -1188,6 +1230,7 @@ function relativeLuminance(rgb) {
 /* ── Analysis rendering (shared by WS handler + mode toggle) ─────────── */
 function _renderAnalysisPayload(payload) {
   if (!payload) return;
+  _applyRatingLabel(payload);
 
   const SKILLSET_LABELS = {
     stream: "STREAM", jumpstream: "JS", handstream: "HS",
@@ -1248,7 +1291,7 @@ function _renderAnalysisPayload(payload) {
       danShort: lShort,
       dp: lDp,
       danSuffix: lBeyond ? "Beyond" : lSublevel,
-      metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+      metrics: ratingReadout(payload).value,
       chart: familyText,
       chartColor: primaryFamily,
       lnCourseMode: true,
@@ -1267,6 +1310,31 @@ function _renderAnalysisPayload(payload) {
   const celestial = payload.celestial;
   const _signicialRaw = payload.signicial;
   const _shoegazerRaw = payload.shoegazer;
+
+  const _pv = _prismPick(payload);
+  if (_pv) {
+    const h = _prismHeadline(_pv);
+    const tm = _pv.t.msd || {};
+    const top = _prismTop(tm);
+    const metrics = [[tm.Overall, "MSD"], [tm.LN, "LN"]].filter((m) => Number(m[0]) > 0);
+    lastDanRaw = "Prism: " + h.name;
+    applyDanResult({
+      danName: h.name,
+      danShort: h.name.substring(0, 3).toUpperCase(),
+      dp: h.dp,
+      danSuffix: h.sub,
+      metrics: metrics.length ? metrics.map((m) => Number(m[0]).toFixed(2)).join(" · ") : "--.-",
+      chart: top.length ? top.join(" · ") : `${_pv.t.key_count}K`,
+      chartColor: _PRISM_FAMILY[top[0]] || "HYBRID",
+      mode7k: true,
+      tier7k: h.name,
+    });
+    const unit = metrics.length ? metrics.map((m) => m[1]).join(" · ") : "MSD";
+    document.querySelectorAll(".msd-unit").forEach((e) => { e.textContent = unit; });
+    setChartButtonReady(true);
+    if (ui.density) { ui.density.innerHTML = ""; ui.density.classList.remove("has-data"); }
+    return;
+  }
 
   if (payload.mode === "7k" && payload.tier_7k) {
       const tDp = Number(payload.dp_7k || 0);
@@ -1339,7 +1407,7 @@ function _renderAnalysisPayload(payload) {
       danShort: cShort,
       dp: cDp,
       danSuffix: cBeyond ? "Beyond" : cSublevel,
-      metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+      metrics: ratingReadout(payload).value,
       chart: familyText,
       chartColor: primaryFamily,
       celestialMode: true,
@@ -1370,7 +1438,7 @@ function _renderAnalysisPayload(payload) {
       danShort: sShort,
       dp: sDp,
       danSuffix: sSuffix,
-      metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+      metrics: ratingReadout(payload).value,
       chart: familyText,
       chartColor: primaryFamily,
       signicialMode: true,
@@ -1400,7 +1468,7 @@ function _renderAnalysisPayload(payload) {
       danShort: gShort,
       dp: gDp,
       danSuffix: gSuffix,
-      metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+      metrics: ratingReadout(payload).value,
       chart: familyText,
       chartColor: primaryFamily,
       shoegazerMode: true,
@@ -1425,7 +1493,7 @@ function _renderAnalysisPayload(payload) {
     danShort: String(payload.dan_short || ""),
     dp: Number(payload.dp || 0),
     danSuffix: displaySuffix,
-    metrics: displayMsd > 0 ? displayMsd.toFixed(2) : "--.-",
+    metrics: ratingReadout(payload).value,
     chart: familyText,
     chartColor: primaryFamily,
   });
@@ -1773,28 +1841,6 @@ function renderMsdBars(estimates, overallMsd) {
   ui.density.classList.add("has-data");
 }
 
-function findDanOverlay(payload) {
-  if (!payload || typeof payload !== "object") {
-    return "";
-  }
-
-  const directCandidates = [
-    payload.danOverlay,
-    safeGet(payload, "overlay.danOverlay"),
-    safeGet(payload, "menu.danOverlay"),
-    safeGet(payload, "gameplay.danOverlay"),
-    safeGet(payload, "results.danOverlay")
-  ];
-
-  for (const candidate of directCandidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate;
-    }
-  }
-
-  return "";
-}
-
 // Fades the BG out, waits for the image to load AND the fade to finish,
 // then sets the new image and fades it back in. On rapid map changes only
 // the latest generation actually reveals — stale ones are discarded.
@@ -2010,12 +2056,11 @@ function applyProgressData(payload) {
 function applyBeatmapData(payload) {
   const artist = safeGet(payload, "menu.bm.metadata.artist", "Unknown Artist");
   const title = safeGet(payload, "menu.bm.metadata.title", "Unknown Title");
-  // prefer 'version' (same field Python reads) then 'difficulty' as fallback
+  // prefer 'version', fall back to 'difficulty'
   const diff = safeGet(payload, "menu.bm.metadata.version",
     safeGet(payload, "menu.bm.metadata.difficulty", "Unknown Diff"));
 
-  // Use md5 as the primary map key — it is unambiguous and always matches the
-  // Python bridge key (which also receives md5 from tosu).  Fall back to the
+  // Use md5 as the primary map key — unambiguous. Fall back to the
   // string combo only when md5 is absent (e.g. no map loaded).
   const md5 = safeGet(payload, "menu.bm.md5", "");
   const mapKey = (md5 || buildMapKey(artist, title, diff)) + "|" + safeGet(payload, "menu.mods.num", 0);
@@ -2100,97 +2145,12 @@ function applyBeatmapData(payload) {
   return supportInfo;
 }
 
-function applyFromPythonBridge(payload) {
+function applyResult(payload) {
   try {
     if (!payload || typeof payload !== "object") {
       return;
     }
 
-    if (payload.type === "bridge-init") {
-      bridgeMode = true;
-      if (!_pythonBridgeReady) {
-        _pythonBridgeReady = true;
-        // In bridge mode we KEEP the connect screen visible and show a
-        // "Waiting for tosu" spinner. The screen will advance to "Connected"
-        // (green check) only when the first real state/data arrives from tosu.
-        // This gives the user proper visual feedback instead of a blank overlay.
-        if (introStage === "connecting") {
-          _showSearching();                     // ensure spinner + download btn visible
-          if (connectEl) connectEl.classList.remove("hidden", "fading");
-          _startOsuCheck();                     // start polling osu! status
-        }
-        // Re-load settings from Python file now that the API is reachable.
-        _loadSettings().then(() => {
-          _applySettings();
-          const savedLayout = _settings.layout || "complete";
-          if (savedLayout !== _layoutMode) {
-            _layoutMode = savedLayout;
-            _applyLayoutMode(true);
-          }
-          // Apply saved window size OR skin defaults safely inside the .then block
-          // once the python settings have been loaded and the API is guaranteed ready.
-          let w = _settings.windowWidth;
-          let h = _settings.windowHeight;
-          const isLegacyDefault = (w === 700 && h === 320) || (w === 860 && h === 320);
-          if (isLegacyDefault && (_CURRENT_SKIN === "4" || _CURRENT_SKIN === "5" || _CURRENT_SKIN === "6")) {
-            w = null;
-            h = null;
-          }
-          if (_CURRENT_SKIN === "4") {
-            document.documentElement.style.zoom = 0.61;
-          } else if (_CURRENT_SKIN === "5") {
-            document.documentElement.style.zoom = 0.75;
-          } else if (_CURRENT_SKIN === "6") {
-            document.documentElement.style.zoom = 0.73;
-          }
-          if (w && h && window.pywebview?.api?.set_window_size) {
-            window.pywebview.api.set_window_size(w, h);
-          } else if (!w && !h && window.pywebview?.api?.set_window_size) {
-            if (_CURRENT_SKIN === "4") {
-              window.pywebview.api.set_window_size(284, 335);
-            } else if (_CURRENT_SKIN === "5") {
-              window.pywebview.api.set_window_size(589, 170);
-            } else if (_CURRENT_SKIN === "6") {
-              window.pywebview.api.set_window_size(645, 211);
-            } else {
-              window.pywebview.api.set_window_size(700, 320);
-            }
-          }
-        });
-      }
-      return;
-    }
-
-    if (payload.type === "notification") {
-      showToast(payload.message || "Done", 3500);
-      setChartDone();
-      return;
-    }
-
-    if (payload.type === "visualizer") {
-      vizActive = !!payload.active;
-      if (payload.bands && Array.isArray(payload.bands)) {
-        for (let i = 0; i < vizTarget.length; i++) {
-          vizTarget[i] = payload.bands[i] || 0;
-        }
-      }
-      if (!vizActive) vizTarget.fill(0);
-      return;
-    }
-
-    // When real tosu data arrives while still on the connect screen in bridge
-    // mode, we record that tosu is connected and check if osu! is also running.
-    if (_pythonBridgeReady && introStage === "connecting") {
-      const incomingState = (payload.type === "state") ? (payload.state || "") : "";
-      // Only advance on real connection — not on waiting_tosu state
-      const isRealData = payload.type !== "state" || (incomingState !== "waiting_tosu" && incomingState !== "");
-      if (isRealData) {
-        _tosuConnected = true;
-      } else if (incomingState === "waiting_tosu") {
-        _tosuConnected = false;
-      }
-      _checkAndAdvanceConnection();
-    }
 
     // ── Overlay state changes (waiting_tosu, analyzing, ready, error) ──
     if (payload.type === "state") {
@@ -2300,21 +2260,24 @@ function applyFromPythonBridge(payload) {
       // mode so the display matches what is actually being scored.
       const lnRoute = String(payload.ln_route || "rice");
       const wasLn = _lnOverrideActive;
-      _lnOverrideActive = (lnRoute === "ln" && payload.ln_course != null);
+      _lnOverrideActive = (lnRoute === "ln" && payload.ln_course != null) || _prismIsLnMap(payload);
+      _lastAnalysisPayload = payload;
+      _updateScoringModeBadge(); // Prism badge depends on the payload, not just the LN flip
       if (_lnOverrideActive !== wasLn) {
-        _updateScoringModeBadge();
-        if (_lnOverrideActive) {
+        if (payload.prism) {
+          if (_prismPick(payload)) showModeAnnounce(_lnOverrideActive ? "Prism LN" : "Prism", "reform");
+        } else if (_lnOverrideActive) {
           showModeAnnounce(_lnModePinned ? "LN Course \u25C8" : "LN Course", "ln_course");
         } else {
           // Reverted to rice mode — announce the user's preferred mode
           const restoreName = _scoringMode === "celestial" ? "Celestial"
             : _scoringMode === "signicial" ? "Signicial"
               : _scoringMode === "shoegazer" ? "Shoegazer"
+                : _scoringMode === "prism" ? "Prism"
                 : "Reform";
           showModeAnnounce(restoreName, _scoringMode);
         }
       }
-      _lastAnalysisPayload = payload;
       _renderAnalysisPayload(payload);
       setChartButtonReady(true);
       // ── Density graph (ui-3 skin) ───────────────────────────────────
@@ -2335,8 +2298,8 @@ function applyFromPythonBridge(payload) {
     }
   } catch (err) {
     finishMapTransition();
-    applyLoading(`Bridge error: ${err && err.message ? err.message : err}`);
-    showToast(`Bridge error: ${err && err.message ? err.message : err}`, 5000);
+    applyLoading(`Engine error: ${err && err.message ? err.message : err}`);
+    showToast(`Engine error: ${err && err.message ? err.message : err}`, 5000);
   }
 
   // ── Legacy structured DP result (backwards compat) ────────────────
@@ -2403,38 +2366,40 @@ function applyFromPythonBridge(payload) {
   }
 }
 
-// (old renderExportChart removed — see bottom of file for current version)
-
-// Expose the Python bridge callback as soon as the script loads so startup
-// events that arrive before boot() do not kill the bridge.
-window.__overlayFromPython = applyFromPythonBridge;
-
-// tosu-port (JS-only): fetch analysis from tosu's built-in TypeScript endpoint.
-// No Python server needed — scoring runs inside tosu's own process.
-// Requires danOverlay.ts patch applied to packages/server/router/.
-// Pure in-browser analysis: fetch the current .osu from tosu and run the bundled
-// engine (window.DanEngine). No sidecar, no tosu modification.
+// Pure in-browser analysis: fetch the current .osu from tosu's HTTP file
+// endpoint and run the bundled engine (window.DanEngine). No sidecar, no
+// tosu modification, no external process.
 async function fetchDanAnalysis() {
   try {
     if (!window.DanEngine || typeof window.DanEngine.analyze !== "function") {
-      applyFromPythonBridge({ type: "state", state: "error", message: "Dan engine not loaded (engine/danEngine.js)" });
+      applyResult({ type: "state", state: "error", message: "Dan engine not loaded (engine/danEngine.js)" });
       return;
     }
-    applyFromPythonBridge({ type: "state", state: "analyzing", message: "Computing..." });
+    applyResult({ type: "state", state: "analyzing", message: "Computing..." });
     const res = await fetch("http://localhost:24050/files/beatmap/file");
     if (!res.ok) {
-      applyFromPythonBridge({ type: "state", state: "idle", message: "No beatmap loaded" });
+      applyResult({ type: "state", state: "idle", message: "No beatmap loaded" });
       return;
     }
     const txt = await res.text();
     const out = window.DanEngine.analyze(txt, _curMod || "NM", _curOsuSr || 0);
     if (out && out.error) {
-      applyFromPythonBridge({ type: "state", state: "idle", message: String(out.error) });
+      applyResult({ type: "state", state: "idle", message: String(out.error) });
       return;
     }
-    applyFromPythonBridge({ type: "analysis", ...out });
+    // 6K-8K (and 7K's alternate view): Mania Tracker dan-calc + Prism MSD.
+    if (out.tier_7k != null || out.mode === "prism") {
+      // 5s wait for the 1.7MB wasm on first load; later calls are instant.
+      for (let i = 0; i < 80 && !(window.__DANCALC && window.__DANCALC.ready); i++) await new Promise((r) => setTimeout(r, 60));
+      out.prism = window.__DANCALC ? window.__DANCALC.estimate(txt, _MOD_RATE[_curMod] || 1) : null;
+      if (out.mode === "prism" && !out.prism) {
+        applyResult({ type: "state", state: "error", message: "Prism unavailable (engine/dancalc.wasm)" });
+        return;
+      }
+    }
+    applyResult({ type: "analysis", ...out });
   } catch (err) {
-    applyFromPythonBridge({
+    applyResult({
       type: "state", state: "error",
       message: "Analysis error: " + (err && err.message ? err.message : String(err))
     });
@@ -2452,15 +2417,14 @@ function connect() {
   }
 
   ws.addEventListener("open", () => {
-    if (introStage === "splash" || introStage === "tutorial_prompt" ||
+    _tosuConnected = true;
+    if (introStage === "splash" ||
       introStage === "whats_new" || introStage === "hint" || introStage === "hint2" ||
       introStage === "hint3" || introStage === "hint4" || introStage === "hint_settings" || introStage === "hint_settings") {
       _wsOpenedEarly = true;              // intro screens will skip connecting on exit
     } else if (introStage === "connecting") {
       setIntroStage("connected");
-    } else if (!_pythonBridgeReady) {
-      // Only update display on reconnect when Python bridge isn't the real source.
-      // In bridge mode the WS is used by Python-side; JS side silently reconnects.
+    } else {
       applyLoading("Computing");
     }
   });
@@ -2468,7 +2432,7 @@ function connect() {
   ws.addEventListener("message", (event) => {
     let payload;
     try {
-      payload = JSON.parse(event.data);
+      payload = normalizeV2(JSON.parse(event.data));
     } catch (_err) {
       return;
     }
@@ -2480,26 +2444,13 @@ function connect() {
       return;
     }
 
-    // tosu-port: trigger server-side analysis on map change (non-bridge mode only)
-    if (!_pythonBridgeReady && lastMapKey && lastMapKey !== _lastAnalyzedKey) {
+    // Trigger a fresh in-browser analysis whenever the map (or mods) changes.
+    if (lastMapKey && lastMapKey !== _lastAnalyzedKey) {
       _lastAnalyzedKey = lastMapKey;
       fetchDanAnalysis();
     }
 
     applyProgressData(payload);
-
-    const danRaw = findDanOverlay(payload);
-    if (danRaw) {
-      // remember what we got so later updates without the property don't
-      // overwrite the result with a loading state.
-      lastDanRaw = danRaw;
-
-      const parsed = parseDanOverlay(danRaw);
-      if (parsed) {
-        applyDanResult(parsed);
-        return;
-      }
-    }
 
     // only show a loading state if we haven't received any dan result yet; once
     // we have one we keep showing it until the map changes (handled above).
@@ -2512,39 +2463,29 @@ function connect() {
 
   ws.addEventListener("close", () => {
     _wsOpenedEarly = false;
+    _tosuConnected = false;
     if (introStage === "done") {
-      if (!_pythonBridgeReady) {
-        // Only show reconnecting screen when Python bridge isn't handling the data.
-        finishMapTransition();
-        applyLoading("Reconnecting");
-      }
+      finishMapTransition();
+      applyLoading("Reconnecting");
       scheduleReconnect();
     } else if (introStage === "hint" || introStage === "hint2" ||
       introStage === "hint3" || introStage === "hint4" || introStage === "hint_settings" ||
-      introStage === "whats_new" || introStage === "tutorial_prompt") {
+      introStage === "whats_new") {
       // WS dropped while intro screen is showing — keep the screen, just retry in background
       scheduleReconnect();
     } else {
       // Dropped during intro (splash/connecting/connected)
-      if (_pythonBridgeReady) {
-        // Python bridge is the real data source — never reset the intro state machine.
-        // Just retry WS silently in background.
-        scheduleReconnect();
-      } else {
-        if (introStage === "connecting" || introStage === "connected") {
-          setIntroStage("connecting");
-        }
-        scheduleReconnect();
+      if (introStage === "connecting" || introStage === "connected") {
+        setIntroStage("connecting");
       }
+      scheduleReconnect();
     }
   });
 
   ws.addEventListener("error", () => {
     if (introStage === "done") {
-      if (!_pythonBridgeReady) {
-        finishMapTransition();
-        applyLoading("tosu offline");
-      }
+      finishMapTransition();
+      applyLoading("tosu offline");
     }
     // In intro stages the close event fires next and handles reconnect
   });
@@ -2592,28 +2533,42 @@ document.addEventListener("keydown", async (e) => {
   if (_cfgIsOpen()) return;
   if (!isKeybind("generate_chart", e)) return;
   console.log("[CHART] G pressed. _chartReady:", _chartReady, "chartGenerating:", chartGenerating, "introStage:", introStage);
-  if (chartGenerating || (!_chartReady && introStage === "done")) {
-    showToast(chartGenerating ? "Already generating..." : "Waiting for data...", 1800);
-    return;
-  }
-  if (!window.pywebview || !window.pywebview.api ||
-    typeof window.pywebview.api.on_generate_chart !== "function") {
-    console.log("[CHART] Bridge not available");
-    showToast("Bridge not available", 2500);
-    return;
-  }
+  if (chartGenerating) { showToast("Already generating...", 1800); return; }
+  const p = _lastAnalysisPayload;
+  if (!p || !p.nps_data || !p.nps_data.length) { showToast("Waiting for data...", 1800); return; }
   setChartGenerating(true);
-  showToast("Generating chart...", 2500);
+  showToast("Generating chart...", 1500);
   try {
-    // Python computes the data and pushes renderExportChart() via evaluate_js
-    // from a background thread. We just need to trigger the process here.
-    const result = await window.pywebview.api.on_generate_chart();
-    if (!result || result.status !== "ok") {
-      showToast(result?.message || "Error generating chart", 3000);
-      setChartGenerating(false);
-    }
-    // If status is "ok", Python will call renderExportChart() via evaluate_js shortly.
-    // renderExportChart handles setChartGenerating(false) and save_chart internally.
+    // All client-side now — engine emits nps_data, renderExportChart
+    // downloads the PNG via canvas.toBlob. No python bridge.
+    const pv = _prismPick(p);
+    const ph = pv && _prismHeadline(pv);
+    const tm = pv && (pv.t.msd || {});
+    renderExportChart({
+      type: "render_export_chart",
+      nps_data: p.nps_data,
+      density_meta: p.density_meta || {},
+      dominant_nps: p.dominant_nps || 0,
+      overall_msd: (pv ? tm.Overall : p.overall_msd) || 0,
+      dan_short: pv ? (pv.d ? ph.name : "") : (p.dan_short || ""),
+      dan_sublevel: pv ? ph.sub : "",
+      family: pv ? (_prismTop(tm)[0] || "") : (p.family || ""),
+      skillsets: p.skillsets || {},
+      skill_rows: pv ? Object.keys(_PRISM_LBL).filter((k) => k !== "LN" || tm.LN > 0)
+        .map((k) => ({ l: _PRISM_LBL[k][0] + _PRISM_LBL[k].slice(1).toLowerCase(), v: Number(tm[k]) || 0 })) : null,
+      key_count: pv ? pv.t.key_count : (p.mode === "7k" ? 7 : 4),
+      rate_label: _curMod !== "NM" ? `${_curMod} ${_MOD_RATE[_curMod]}x` : "",
+      bg_image: "http://localhost:24050/files/beatmap/background", // same origin: canvas stays untainted
+      parsed_meta: {
+        bpm: p.bpm || 0, od: p.od || 0,
+        artist: p.artist || "", title: p.title || "", version: p.version || "",
+        creator: p.mapper || p.creator || "",
+        note_count: p.note_count || 0, ln_count: p.ln_count || 0,
+        drain_time_s: p.duration_s || 0,
+        total_time_ms: p.total_time_ms || (p.duration_s ? p.duration_s * 1000 : 0),
+        sr_official: p.osu_sr || 0,
+      },
+    });
   } catch (_err) {
     console.error("[CHART] Error:", _err);
     showToast("Error generating chart: " + (_err.message || _err), 3000);
@@ -2622,9 +2577,8 @@ document.addEventListener("keydown", async (e) => {
 });
 /* ── Intro sequence state machine ───────────────────────────────── */
 
-let introStage = "connecting"; // "connecting" | "connected" | "splash" | "whats_new" | "hint" | "hint2" | "hint3" | "hint4" | "hint_settings" | "tutorial_prompt" | "done"
+let introStage = "connecting"; // "connecting" | "connected" | "splash" | "whats_new" | "hint" | "hint2" | "hint3" | "hint4" | "hint_settings" | "done"
 let _wsOpenedEarly = false;    // WS connected while still in splash
-let _pythonBridgeReady = false;  // Python bridge sent bridge-init; never reset by WS events
 
 const _SPLASH_EXIT_MS = 3500;  // fade-out starts this many ms after boot
 const _SPLASH_FADE_MS = 700;   // duration of the splash fade
@@ -2682,16 +2636,10 @@ function _updateOsuStatus() {
   }
 }
 
-async function _checkOsuRunning() {
-  try {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.check_osu_running) {
-      _osuRunning = await window.pywebview.api.check_osu_running();
-    } else {
-      _osuRunning = false;
-    }
-  } catch (_e) {
-    _osuRunning = false;
-  }
+function _checkOsuRunning() {
+  // tosu only serves beatmap data while osu! is running, so an open socket is
+  // our osu!-presence signal (no desktop bridge available in a tosu counter).
+  _osuRunning = !!(ws && ws.readyState === WebSocket.OPEN);
   _updateOsuStatus();
   _checkAndAdvanceConnection();
 }
@@ -2739,10 +2687,6 @@ function _showConnected() {
 
 function setIntroStage(stage) {
   // If leaving an intro-only stage forcibly (e.g. WS drops), hide it immediately.
-  if (introStage === "tutorial_prompt" && stage !== "tutorial_prompt") {
-    const tutEl = document.getElementById("tutorialPromptScreen");
-    if (tutEl) { tutEl.classList.add("hidden"); tutEl.classList.remove("fading"); }
-  }
   if (introStage === "whats_new" && stage !== "whats_new") {
     if (whatsNewEl) { whatsNewEl.classList.add("hidden"); whatsNewEl.classList.remove("fading"); }
   }
@@ -2766,48 +2710,8 @@ function setIntroStage(stage) {
 
   switch (stage) {
     case "splash": {
-      // Splash screen was removed. Advance to tutorial_prompt immediately.
-      setIntroStage("tutorial_prompt");
-      break;
-    }
-
-    case "tutorial_prompt": {
-      const tutPromptEl = document.getElementById("tutorialPromptScreen");
-      if (!tutPromptEl) { setIntroStage("whats_new"); break; }
-
-      // Increment how many times this prompt has been shown
-      const tutCount = parseInt(localStorage.getItem("danOverlay_tutCount") || "0", 10);
-      localStorage.setItem("danOverlay_tutCount", String(tutCount + 1));
-
-      tutPromptEl.classList.remove("hidden", "fading");
-
-      const yesBtn = document.getElementById("tutYesBtn");
-      const noBtn = document.getElementById("tutNoBtn");
-      const neverBtn = document.getElementById("tutNeverBtn");
-
-      function _hideTutPrompt(nextStage) {
-        if (introStage !== "tutorial_prompt") return;
-        if (yesBtn) yesBtn.removeEventListener("click", _onYes);
-        if (noBtn) noBtn.removeEventListener("click", _onNo);
-        if (neverBtn) neverBtn.removeEventListener("click", _onNever);
-        tutPromptEl.classList.add("fading");
-        setTimeout(() => {
-          tutPromptEl.classList.add("hidden");
-          setIntroStage(nextStage);
-        }, _HINT_FADE_MS);
-      }
-
-      function _onYes() { _hideTutPrompt("whats_new"); }
-      function _onNo() { _hideTutPrompt("hint_settings"); }
-      function _onNever() {
-        _settings.neverShowTutorial = true;
-        void _saveSettings();
-        _hideTutPrompt("done");
-      }
-
-      if (yesBtn) yesBtn.addEventListener("click", _onYes);
-      if (noBtn) noBtn.addEventListener("click", _onNo);
-      if (neverBtn) neverBtn.addEventListener("click", _onNever);
+      // Splash and first-launch tutorial prompt were removed.
+      setIntroStage("done");
       break;
     }
 
@@ -2908,10 +2812,7 @@ function setIntroStage(stage) {
         setTimeout(() => {
           if (introStage !== "connected") return;
           if (connectEl) connectEl.classList.add("hidden");
-          // Show tutorial prompt for first-timers unless they opted out.
-          const tutCount = parseInt(localStorage.getItem("danOverlay_tutCount") || "0", 10);
-          const showTut = !_settings.neverShowTutorial && tutCount < 2;
-          setIntroStage(showTut ? "tutorial_prompt" : "done");
+          setIntroStage("done"); // tutorial is opt-in from Settings → Help
         }, 600);
       }, _CONNECTED_HOLD);
       break;
@@ -2927,12 +2828,6 @@ function setIntroStage(stage) {
 /* ── Boot ────────────────────────────────────────────────────────── */
 
 function boot() {
-  const isPythonBridge = typeof window.__overlayFromPython === 'function';
-  if (!isPythonBridge) {
-    window.__overlayFromPython = applyFromPythonBridge;
-  }
-  bridgeMode = typeof window.__overlayFromPython === 'function';
-
   setTickerText(ui.mapTicker, "Waiting for beatmap from tosu...");
   setTickerText(ui.statsTicker, "BPM -- · TIME --:-- · NOTES -- · LN -- · OD -- · HP -- · MAPPER --");
 
@@ -2941,11 +2836,11 @@ function boot() {
   if (skipIntro) {
     localStorage.removeItem("danOverlay_skipIntro");
     if (splashEl) splashEl.classList.add("hidden");
-    // Hide connect screen on reload — bridge will already be live.
+    // Hide connect screen on reload — the socket reconnects immediately.
     if (connectEl) connectEl.classList.add("hidden");
     introStage = "connecting";
   } else {
-    // Initialize the connect screen visuals before the bridge-init arrives.
+    // Show the connect screen until the socket opens.
     _showSearching();
     setIntroStage("connecting");
   }
@@ -3181,31 +3076,17 @@ document.addEventListener("keydown", (e) => {
     const panel = document.getElementById("danPanel");
     const isExpanded = panel?.classList.contains("is-expanded");
     if (_CURRENT_SKIN === "4") {
-      if (window.pywebview?.api?.set_window_size) {
-        window.pywebview.api.set_window_size(284, isExpanded ? 466 : 335);
-      }
       document.documentElement.style.zoom = 0.61;
-      if (typeof showToast === "function") showToast(isExpanded ? "Reset: 284×466 ◱" : "Reset: 284×335 ◱");
+      if (typeof showToast === "function") showToast("Scale reset ◱");
     } else if (_CURRENT_SKIN === "5") {
-      if (window.pywebview?.api?.set_window_size) {
-        window.pywebview.api.set_window_size(589, isExpanded ? 272 : 170);
-      }
       document.documentElement.style.zoom = 0.75;
-      if (typeof window._resetP2ResizeStates === "function") {
-        window._resetP2ResizeStates();
-      }
-      if (typeof showToast === "function") showToast(isExpanded ? "Reset: 589×272 ◱" : "Reset: 589×170 ◱");
+      if (typeof showToast === "function") showToast("Scale reset ◱");
     } else if (_CURRENT_SKIN === "6") {
-      if (window.pywebview?.api?.set_window_size) {
-        window.pywebview.api.set_window_size(645, isExpanded ? 297 : 211);
-      }
       document.documentElement.style.zoom = 0.73;
-      if (typeof showToast === "function") showToast(isExpanded ? "Reset: 645×297 ◱" : "Reset: 645×211 ◱");
+      if (typeof showToast === "function") showToast("Scale reset ◱");
     } else {
-      if (window.pywebview?.api?.reset_window_size) {
-        window.pywebview.api.reset_window_size();
-      }
-      if (typeof showToast === "function") showToast("Reset: 700×320 ◱");
+      document.documentElement.style.zoom = "";
+      if (typeof showToast === "function") showToast("Scale reset ◱");
     }
     // Also reset layout to full (for skins that use classic layout modes)
     _layoutMode = "complete";
@@ -3224,10 +3105,6 @@ document.addEventListener("keydown", (e) => {
   _resizeMode = nextMode;
   _updateHintLabel();
   adaptZoom();
-
-  if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.set_resize_mode === "function") {
-    window.pywebview.api.set_resize_mode(_resizeMode);
-  }
 
   const label = _resizeMode === "locked"
     ? "Resize: Locked ◈ (proportional)"
@@ -3300,6 +3177,7 @@ document.addEventListener("keydown", (e) => {
     const restoreName = _scoringMode === "celestial" ? "Celestial"
       : _scoringMode === "signicial" ? "Signicial"
         : _scoringMode === "shoegazer" ? "Shoegazer"
+          : _scoringMode === "prism" ? "Prism"
           : "Reform";
     showModeAnnounce(restoreName, _scoringMode);
   } else {
@@ -3307,26 +3185,24 @@ document.addEventListener("keydown", (e) => {
     _lnModePinned = true;
     _lnOverrideActive = true;
     _updateScoringModeBadge();
-    showModeAnnounce("LN Course \u25C8", "ln_course");
+    if (_prismPick(_lastAnalysisPayload)) showModeAnnounce("Prism LN", "reform");
+    else showModeAnnounce("LN Course \u25C8", "ln_course");
   }
   if (_lastAnalysisPayload) _renderAnalysisPayload(_lastAnalysisPayload);
 });
 
-// Tab — toggle whether the overlay stays pinned above osu
+// Ctrl+6 \u2014 Prism (Mania Tracker dan-calc). 7K's alternate ruler; 6K/8K always
+// use it, 4K has none and shows Reform.
 document.addEventListener("keydown", (e) => {
   if (_cfgIsOpen()) return;
-  if (!isKeybind("overlay_pin", e)) return;
+  if (!isKeybind("mode_prism", e)) return;
   e.preventDefault();
-  if (window.pywebview?.api?.toggle_overlay_pin) {
-    window.pywebview.api.toggle_overlay_pin().then((isPinned) => {
-      if (typeof showToast === "function") {
-        showToast(isPinned
-          ? "Overlay pin ON — stays above osu ◈"
-          : "Overlay pin OFF — normal window order ◱"
-        );
-      }
-    });
-  }
+  _scoringMode = "prism";
+  _lnModePinned = false;
+  _lnOverrideActive = _prismIsLnMap(_lastAnalysisPayload);
+  _updateScoringModeBadge();
+  showModeAnnounce("Prism", "reform");
+  if (_lastAnalysisPayload) _renderAnalysisPayload(_lastAnalysisPayload);
 });
 
 /* Responsive Zooming and Performance Scaling for High Resolutions */
@@ -3518,9 +3394,6 @@ function _formatKeybind(kb) {
   return parts.join("+");
 }
 
-let _cfgPrevHeight = null;
-let _cfgPrevWidth = null;
-const _CFG_OPEN_HEIGHT = 620;
 let _isOpeningSettings = false;
 
 async function _openSettings() {
@@ -3528,39 +3401,6 @@ async function _openSettings() {
   const overlay = document.getElementById("cfgOverlay");
   if (!overlay) return;
   _isOpeningSettings = true;
-  // Capture the *actual* window dimensions before expanding, so we can restore
-  // them exactly and show the real values in the Window Size fields.
-  // PyWebView window dimensions can be stale/cached on Windows.
-  // Use JS layout outer calculations instead.
-  const isFrameless = _settings && _settings.frameless;
-  _cfgPrevWidth = isFrameless ? window.innerWidth : (window.innerWidth + 16);
-  _cfgPrevHeight = isFrameless ? window.innerHeight : (window.innerHeight + 39);
-
-  // Expand window dimensions to comfortably fit settings panel if narrow or short
-  if (window.pywebview?.api?.set_window_size) {
-    const curH = _cfgPrevHeight ?? 0;
-    const curW = _cfgPrevWidth ?? 0;
-
-    let targetW = -1;
-    let targetH = -1;
-
-    if (curW > 0 && curW < 580) {
-      targetW = 580;
-    } else {
-      _cfgPrevWidth = null; // No need to restore width if we didn't expand it
-    }
-
-    if (curH > 0 && curH < _CFG_OPEN_HEIGHT) {
-      targetH = _CFG_OPEN_HEIGHT;
-    } else {
-      _cfgPrevHeight = null; // No need to restore height if we didn't expand it
-    }
-
-    if (targetW !== -1 || targetH !== -1) {
-      window.pywebview.api.set_window_size(targetW, targetH);
-    }
-  }
-
   _renderCfgPanel();
   overlay.classList.add("is-open");
   overlay.setAttribute("aria-hidden", "false");
@@ -3573,16 +3413,6 @@ function _closeSettings() {
   _cancelKeybindCapture();
   overlay.classList.remove("is-open");
   overlay.setAttribute("aria-hidden", "true");
-
-  // Restore window to pre-settings dimensions if we expanded them.
-  const targetW = (_cfgPrevWidth !== null) ? _cfgPrevWidth : -1;
-  const targetH = (_cfgPrevHeight !== null) ? _cfgPrevHeight : -1;
-
-  if ((targetW !== -1 || targetH !== -1) && window.pywebview?.api?.set_window_size) {
-    window.pywebview.api.set_window_size(targetW, targetH);
-  }
-  _cfgPrevHeight = null;
-  _cfgPrevWidth = null;
 }
 
 function _renderCfgPanel() {
@@ -3623,49 +3453,9 @@ function _renderCfgPanel() {
   if (framelessChk) framelessChk.checked = _settings.frameless;
   const skinSel = document.getElementById("cfgSkinSelect");
   if (skinSel) skinSel.value = _settings.skin;
-  // Window size inputs — populate with current dimensions from Python
-  _populateWindowSizeInputs();
+  const rdSel = document.getElementById("cfgRatingDisplay");
+  if (rdSel) rdSel.value = _ratingDisplay;
   _renderKeybindRows();
-}
-
-async function _populateWindowSizeInputs() {
-  const wEl = document.getElementById("cfgWinWidth");
-  const hEl = document.getElementById("cfgWinHeight");
-  if (!wEl || !hEl) return;
-  // Use captured dimensions from before settings panel expansion,
-  // or fall back to saved settings, then to Python API, then to defaults.
-  const savedW = _settings.windowWidth;
-  const savedH = _settings.windowHeight;
-
-  if (savedW) {
-    wEl.value = savedW;
-  } else if (_cfgPrevWidth) {
-    wEl.value = _cfgPrevWidth;
-  } else {
-    if (_CURRENT_SKIN === "4") wEl.value = 284;
-    else if (_CURRENT_SKIN === "5") wEl.value = 589;
-    else if (_CURRENT_SKIN === "6") wEl.value = 645;
-    else wEl.value = 700;
-  }
-
-  if (savedH) {
-    hEl.value = savedH;
-  } else if (_cfgPrevHeight) {
-    hEl.value = _cfgPrevHeight;
-  } else {
-    if (_CURRENT_SKIN === "4") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      hEl.value = isExp ? 466 : 335;
-    } else if (_CURRENT_SKIN === "5") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      hEl.value = isExp ? 272 : 170;
-    } else if (_CURRENT_SKIN === "6") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      hEl.value = isExp ? 297 : 211;
-    } else {
-      hEl.value = 320;
-    }
-  }
 }
 
 function _setKeybindButtonIdle(action, badge, btn) {
@@ -3787,41 +3577,22 @@ function _initCfgListeners() {
     _applySettings();
     _closeSettings();
   });
-  document.getElementById("cfgSave")?.addEventListener("click", async () => {
+  document.getElementById("cfgSave")?.addEventListener("click", () => {
     const skinChanged = _settings.skin !== _CURRENT_SKIN;
-    // Read window size directly from DOM (change event may not have fired yet)
-    const winW = document.getElementById("cfgWinWidth");
-    const winH = document.getElementById("cfgWinHeight");
-    const newW = winW ? parseInt(winW.value) : null;
-    const newH = winH ? parseInt(winH.value) : null;
-    if (newW && newH) { _settings.windowWidth = newW; _settings.windowHeight = newH; }
-    await _saveSettings();
-    // Apply window size (null = use default 700x320)
-    if (newW && newH && window.pywebview?.api?.set_window_size) {
-      window.pywebview.api.set_window_size(newW, newH);
-      // Prevent _closeSettings from restoring the pre-settings height
-      // since the user explicitly chose a new window size.
-      _cfgPrevHeight = null;
-    }
+    _saveSettings();
     _closeSettings();
     if (skinChanged) {
-      // Ask Python to navigate the webview to the correct skin HTML.
-      // Using pywebview.load_url() ensures the bridge is re-established.
+      // Navigate to the selected skin's HTML; skip the intro on reload.
       localStorage.setItem("danOverlay_skipIntro", "1");
       showToast("Reloading with new skin\u2026", 1500);
       setTimeout(() => {
-        if (window.pywebview?.api?.switch_skin) {
-          window.pywebview.api.switch_skin(_settings.skin);
-        } else {
-          // Fallback for dev mode (no Python)
-          const base = window.location.href
-            .replace(/\/ui-\d+\/index\.html([?#].*)?$/, '')
-            .replace(/\/index\.html([?#].*)?$/, '');
-          const newUrl = _settings.skin !== "1"
-            ? base + "/ui-" + _settings.skin + "/index.html"
-            : base + "/index.html";
-          window.location.href = newUrl;
-        }
+        const base = window.location.href
+          .replace(/\/ui-\d+\/index\.html([?#].*)?$/, '')
+          .replace(/\/index\.html([?#].*)?$/, '');
+        const newUrl = _settings.skin !== "1"
+          ? base + "/ui-" + _settings.skin + "/index.html"
+          : base + "/index.html";
+        window.location.href = newUrl;
       }, 1600);
     } else {
       showToast("Settings saved \u2713", 2000);
@@ -3979,75 +3750,21 @@ function _initCfgListeners() {
     });
     danScaleNum.addEventListener("focus", () => danScaleNum.select());
   }
+  const ratingSel = document.getElementById("cfgRatingDisplay");
+  if (ratingSel) {
+    ratingSel.value = _ratingDisplay;
+    ratingSel.addEventListener("change", () => {
+      _ratingDisplay = ratingSel.value;
+      try { localStorage.setItem("danOverlay_ratingDisplay", _ratingDisplay); } catch (_) {}
+      if (_lastAnalysisPayload) _renderAnalysisPayload(_lastAnalysisPayload);
+    });
+  }
   const skinSel = document.getElementById("cfgSkinSelect");
   if (skinSel) {
     skinSel.addEventListener("change", () => {
       _settings.skin = skinSel.value;
-
-      // Automatically update the window size inputs in settings panel to the new skin's defaults
-      let defaultW = 700;
-      let defaultH = 320;
-      if (_settings.skin === "4") {
-        const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-        defaultW = 284;
-        defaultH = isExp ? 466 : 335;
-      } else if (_settings.skin === "5") {
-        const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-        defaultW = 589;
-        defaultH = isExp ? 272 : 170;
-      } else if (_settings.skin === "6") {
-        const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-        defaultW = 645;
-        defaultH = isExp ? 297 : 211;
-      }
-
-      const winW = document.getElementById("cfgWinWidth");
-      const winH = document.getElementById("cfgWinHeight");
-      if (winW) winW.value = defaultW;
-      if (winH) winH.value = defaultH;
-
-      // Clear custom dimensions so the new skin uses its native defaults/zoom on reload
-      _settings.windowWidth = null;
-      _settings.windowHeight = null;
     });
   }
-
-  // Window size inputs — store values on change, apply on Save
-  const winW = document.getElementById("cfgWinWidth");
-  const winH = document.getElementById("cfgWinHeight");
-  if (winW) winW.addEventListener("change", () => {
-    _settings.windowWidth = Math.max(300, parseInt(winW.value) || 700);
-  });
-  if (winH) winH.addEventListener("change", () => {
-    _settings.windowHeight = Math.max(80, parseInt(winH.value) || 320);
-  });
-  // Reset button — restore default window size
-  const resetWinBtn = document.getElementById("cfgResetWinSize");
-  if (resetWinBtn) resetWinBtn.addEventListener("click", () => {
-    let defaultW = 700;
-    let defaultH = 320;
-    if (_CURRENT_SKIN === "4") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      defaultW = 284;
-      defaultH = isExp ? 466 : 335;
-    } else if (_CURRENT_SKIN === "5") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      defaultW = 589;
-      defaultH = isExp ? 272 : 170;
-      if (typeof window._resetP2ResizeStates === "function") {
-        window._resetP2ResizeStates();
-      }
-    } else if (_CURRENT_SKIN === "6") {
-      const isExp = document.getElementById("danPanel")?.classList.contains("is-expanded");
-      defaultW = 645;
-      defaultH = isExp ? 297 : 211;
-    }
-    if (winW) winW.value = defaultW;
-    if (winH) winH.value = defaultH;
-    _settings.windowWidth = null;
-    _settings.windowHeight = null;
-    showToast(`Window size reset to default (${defaultW}×${defaultH}). Press Save to apply.`, 2500);
-  });
 
   // Green screen toggle
   const greenScreenChk = document.getElementById("cfgGreenScreenChk");
@@ -4254,32 +3971,12 @@ function _updateDensityProgress(currentMs) {
   await _loadSettings();
   _layoutMode = _settings.layout || "complete";
   _applySettings();
-  let w = _settings.windowWidth;
-  let h = _settings.windowHeight;
-  const isLegacyDefault = (w === 700 && h === 320) || (w === 860 && h === 320);
-  if (isLegacyDefault && (_CURRENT_SKIN === "4" || _CURRENT_SKIN === "5" || _CURRENT_SKIN === "6")) {
-    w = null;
-    h = null;
-  }
   if (_CURRENT_SKIN === "4") {
     document.documentElement.style.zoom = 0.61;
   } else if (_CURRENT_SKIN === "5") {
     document.documentElement.style.zoom = 0.75;
   } else if (_CURRENT_SKIN === "6") {
     document.documentElement.style.zoom = 0.73;
-  }
-  if (w && h && window.pywebview?.api?.set_window_size) {
-    window.pywebview.api.set_window_size(w, h);
-  } else if (!w && !h && window.pywebview?.api?.set_window_size) {
-    if (_CURRENT_SKIN === "4") {
-      window.pywebview.api.set_window_size(284, 335);
-    } else if (_CURRENT_SKIN === "5") {
-      window.pywebview.api.set_window_size(589, 170);
-    } else if (_CURRENT_SKIN === "6") {
-      window.pywebview.api.set_window_size(645, 211);
-    } else {
-      window.pywebview.api.set_window_size(700, 320);
-    }
   }
   _applyLayoutMode(true);
   _initCfgListeners();
