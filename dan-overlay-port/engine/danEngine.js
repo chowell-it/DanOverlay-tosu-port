@@ -213,7 +213,7 @@ var DanEngine = (() => {
     let rejectionReason = null;
     if (p.rejected) rejectionReason = `parser rejected: mode=${mode}, keycount=${keycount}`;
     if (mode !== 3) rejectionReason = rejectionReason ?? `not mania mode (mode=${mode})`;
-    if (!is4k && !is7k) rejectionReason = rejectionReason ?? `not 4K or 7K (keycount=${keycount})`;
+    if (!is4k && !is7k && keycount !== 6 && keycount !== 8) rejectionReason = rejectionReason ?? `not 4K, 6K, 7K or 8K (keycount=${keycount})`;
     if (noteCount < 20) rejectionReason = rejectionReason ?? `too few notes (${noteCount})`;
     if (drainTimeS < 5) rejectionReason = rejectionReason ?? `drain too short (${drainTimeS.toFixed(1)}s)`;
     const lnConfidence = lnConfidenceBand(lnRatio);
@@ -4546,6 +4546,21 @@ var DanEngine = (() => {
     const parsed = parsearOsuV2Text(osuText, true);
     const domain = validateDomain(parsed);
     if (!domain.valid) return { type: "analysis", error: domain.rejection_reason ?? "domain_rejected" };
+    if (!domain.is_4k && !domain.is_7k) {
+      return {
+        type: "analysis",
+        mode: "prism",
+        sr: calculateText(osuText, mod === "NC" ? "DT" : mod).sr,
+        bpm: domain.bpm,
+        od: domain.od,
+        duration_s: domain.drain_time_s,
+        note_count: domain.note_count,
+        osu_sr: osuSr || 0,
+        ...buildNpsData(parsed),
+        mod: mod === "NM" ? "" : mod,
+        mod_label: mod
+      };
+    }
     const quaver_rating = estimateQuaver(osuText, mod);
     const nps = buildNpsData(parsed);
     if (domain.is_7k) {

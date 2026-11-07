@@ -50,19 +50,6 @@
 
       <!-- ── Mode picker: shown on every launch ────────────────── -->
 
-      <!-- ── Tutorial prompt (first 2 launches only) ─────────── -->
-      <div class="hint-screen hidden" id="tutorialPromptScreen">
-        <div class="hint-inner">
-          <div class="hint-title">DANOVERLAY — QUICK SETUP</div>
-          <p class="tut-prompt-question">Would you like to see a quick tutorial<br>on resize modes and scoring modes?</p>
-          <div class="tut-prompt-btns">
-            <button class="hint-btn tut-btn-yes"   id="tutYesBtn"   type="button">Yes</button>
-            <button class="hint-btn tut-btn-no"    id="tutNoBtn"    type="button">Skip</button>
-            <button class="hint-btn tut-btn-never" id="tutNeverBtn" type="button">Don’t show again</button>
-          </div>
-        </div>
-      </div>
-
       <!-- ── What's New screen (auto-advance after splash) ────── -->
       <div class="hint-screen hidden" id="whatsNewScreen">
         <div class="hint-inner">
@@ -500,10 +487,11 @@
     <canvas id="exportCanvas" width="1800" height="980"></canvas>
   </div>
 
-  <script src="engine/minacalc.js?v=7"></script>
-  <script src="engine/minacalc-glue.js?v=7"></script>
-  <script src="engine/danEngine.js?v=7"></script>
-  <script src="graph/chart_renderer.js?v=7"></script>
-  <script src="overlay.js?v=7"></script>
+  <script src="engine/minacalc.js?v=8"></script>
+  <script src="engine/minacalc-glue.js?v=8"></script>
+  <script src="engine/dancalc-glue.js?v=8"></script>
+  <script src="engine/danEngine.js?v=8"></script>
+  <script src="graph/chart_renderer.js?v=8"></script>
+  <script src="overlay.js?v=8"></script>
 </body>
 </html>

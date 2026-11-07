@@ -21,7 +21,14 @@ LN Course auto-activates on LN-heavy maps (LN ratio > 0.45). DT/HT are detected
 automatically and rate-adjust the rating.
 
 **7K maps** are auto-detected and rated on the dedicated 7K Dan scale
-(0th…10th, Gamma, Azimuth, Zenith, Stellium). 7K has no MSD panel (MinaCalc is 4K-only).
+(0th…10th, Gamma, Azimuth, Zenith, Stellium). Press **Ctrl+6** (or pick "Prism"
+in settings) to see Mania Tracker's 7K dan and Prism MSD instead.
+
+**6K / 8K maps** use Mania Tracker's dan-calc + Prism: dan tier (6K; 8K has no
+public dan table, so it shows Prism MSD only) and Prism skillsets (Chordstream,
+Bracket, Jack, Tech, Delay). Charts past Mania Tracker's LN threshold show an LN
+rating next to MSD and split into Rice / LN views: LN charts open on LN, and
+**Ctrl+5** toggles between them. No Quaver rating on 6K/8K.
 
 ## Notes
 
@@ -36,9 +43,13 @@ automatically and rate-adjust the rating.
 - `danEngine.js` — the dan analysis (parser, SR engine, classifier, rank, estimators).
 - `minacalc.js` — MinaCalc compiled to WASM (single-file) for MSD.
 - `minacalc-glue.js` — loads the WASM, exposes `window.__MINACALC.msd`.
+- `dancalc.wasm` — Mania Tracker's dan-calc + Prism (6K-8K, 7K alt view).
+- `dancalc-glue.js` — loads it, exposes `window.__DANCALC.estimate(osuText, rate)`.
 
 ## Rebuilding
 
 - Dan engine: `bash port/build-engine.sh` (needs Node + npx/esbuild).
 - MinaCalc WASM: `bash port/build-wasm.sh <minacalc-rs-0.2.2 dir>` (needs emscripten;
   see that script's header for fetching the source).
+- dan-calc WASM: see `port/dancalc-wasm/README.md` (Rust, pinned mania-hub commit;
+  reproducible build, SHA-256 `f6a59b99…271205`).

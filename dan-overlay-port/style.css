@@ -1375,52 +1375,6 @@ html, body {
    Intro sequence: splash + tosu connection screens
    ============================================================ */
 
-/* ── Tutorial prompt Yes/No buttons ──────────────────────── */
-.tut-prompt-question {
-  font-size:   12px;
-  color:       var(--text-dim);
-  text-align:  center;
-  line-height: 1.65;
-  margin:      6px 0 2px;
-}
-
-.tut-prompt-btns {
-  display:    flex;
-  gap:        10px;
-  margin-top: 6px;
-}
-
-/* Override base .hint-btn hide-by-default behavior — always show */
-.tut-prompt-btns .hint-btn {
-  opacity:        1 !important;
-  transform:      none !important;
-  pointer-events: auto !important;
-}
-
-.tut-btn-yes {
-  border-color: rgba(120, 155, 255, 0.55);
-  color:        rgba(180, 205, 255, 0.95);
-}
-
-.tut-btn-no {
-  opacity: 0.6 !important;
-}
-
-.tut-btn-no:hover {
-  opacity: 0.9 !important;
-}
-
-.tut-btn-never {
-  opacity:         0.35 !important;
-  font-size:       10px;
-  letter-spacing:  0.06em;
-  text-transform:  uppercase;
-}
-
-.tut-btn-never:hover {
-  opacity: 0.65 !important;
-}
-
 /* ── Paused overlay ────────────────────────────────────────── */
 .paused-overlay {
   position:        absolute;

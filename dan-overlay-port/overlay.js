@@ -414,6 +414,7 @@ let lastMapKey = "";
 // Current mod + osu! SR, stashed from WS for the in-browser engine call.
 let _curMod = "NM";
 let _curOsuSr = 0;
+const _MOD_RATE = { NM: 1, DT: 1.5, HT: 0.75 };
 function _modFromNum(n) { n = Number(n) || 0; if ((n & 64) || (n & 512)) return "DT"; if (n & 256) return "HT"; return "NM"; }
 let _lastAnalyzedKey = ""; // tosu-port: tracks which map we last fetched analysis for
 let _bgGeneration = 0;
@@ -435,6 +436,7 @@ const _DEFAULT_KEYBINDS = {
   mode_signicial: { key: "3", ctrl: true, alt: false },
   mode_shoegazer: { key: "4", ctrl: true, alt: false },
   mode_ln_course: { key: "5", ctrl: true, alt: false },
+  mode_prism: { key: "6", ctrl: true, alt: false },
   open_settings: { key: ",", ctrl: true, alt: false },
   layout_cycle: { key: "l", ctrl: false, alt: false },
 };
@@ -449,6 +451,7 @@ const _KEYBIND_LABELS = {
   mode_signicial: "Scoring mode: Signicial",
   mode_shoegazer: "Scoring mode: Shoegazer",
   mode_ln_course: "Scoring mode: LN Course",
+  mode_prism: "Scoring mode: Prism (7K)",
   open_settings: "Open settings panel",
   layout_cycle: "Cycle layout density",
 };
@@ -478,7 +481,6 @@ let _settings = {
   broadcastBorderThick: 1,   // 0-10px; border width in broadcast skin
   greenScreen: false, // replace map background with solid #00ff00 for chroma key
   frameless: false,   // remove OS title bar for clean OBS capture (requires restart)
-  neverShowTutorial: false,
   keybinds: JSON.parse(JSON.stringify(_DEFAULT_KEYBINDS)),
 };
 
@@ -495,7 +497,6 @@ function _loadSettings() {
     if (typeof saved.danScale === "number") _settings.danScale = Math.max(0, Math.min(100, saved.danScale));
     if (typeof saved.greenScreen === "boolean") _settings.greenScreen = saved.greenScreen;
     if (typeof saved.frameless === "boolean") _settings.frameless = saved.frameless;
-    if (typeof saved.neverShowTutorial === "boolean") _settings.neverShowTutorial = saved.neverShowTutorial;
     if (typeof saved.layout === "string" && ["complete", "simplified", "compact"].includes(saved.layout))
       _settings.layout = saved.layout;
     if (saved.keybinds && typeof saved.keybinds === "object") {
@@ -604,7 +605,7 @@ let _scoringMode = "reform";
 // tosu-port: pick up scoringMode from tosu settings URL injection or localStorage
 (function () {
   const p = new URLSearchParams(location.search).get("scoringMode");
-  const VALID = ["reform", "celestial", "signicial", "shoegazer"];
+  const VALID = ["reform", "celestial", "signicial", "shoegazer", "prism"];
   if (p && VALID.includes(p)) {
     _scoringMode = p;
   } else {
@@ -648,10 +649,51 @@ let _lnModePinned = false;
 // the user toggles mode without waiting for a new analysis result.
 let _lastAnalysisPayload = null;
 
+// ── Prism (Mania Tracker dan-calc, 6K-8K + 7K alt view) ─────────────────────
+// Mirrors the web extension's prismHeadline. 6K/8K always show Prism; 7K shows
+// its SR ruler unless Prism mode (Ctrl+6) is picked or the chart is LN.
+// Rice/LN split exists when the chart passes Mania Tracker's LN threshold;
+// LN view follows _lnOverrideActive (auto on LN charts, Ctrl+5 toggles).
+const _PRISM_SUB = ["--", "-", "", "+", "++"];
+const _PRISM_SUBLEVELS = ["Low", "Mid-Low", "Mid", "Mid-High", "High"];
+// Prism files its skillsets in MinaCalc's slots; these are Mania Tracker's names.
+const _PRISM_LBL = { Jumpstream: "CHORDSTREAM", Handstream: "BRACKET", Chordjack: "JACK",
+                     Technical: "TECH", Speed: "DELAY", LN: "LN" };
+const _PRISM_FAMILY = { CHORDSTREAM: "STREAM", BRACKET: "STAMINA", JACK: "JACK", TECH: "TECH" };
+function _prismSplit(t) { return !!(t && t.rice && t.ln && t.msd && t.msd.LN > 0); }
+function _prismIsLnMap(p) { const t = p && p.prism; return _prismSplit(t) && !!(t.primary && t.primary.ln); }
+function _prismPick(p) {
+  const t = p && p.prism;
+  if (!t) return null;
+  if (p.mode !== "prism" && _scoringMode !== "prism" && !_lnOverrideActive) return null;
+  if (!_prismSplit(t)) return { d: t.primary, kind: "", t };
+  return _lnOverrideActive ? { d: t.ln, kind: "LN", t } : { d: t.rice, kind: "Rice", t };
+}
+function _prismHeadline(pick) {
+  const d = pick.d;
+  if (!d) return { name: "No dan", sub: `No ${pick.t.key_count}K dan table`, dp: 0 };
+  const n = Number(d.label);
+  const name = Number.isNaN(n) ? d.label[0].toUpperCase() + d.label.slice(1)
+    : `${["0th", "1st", "2nd", "3rd"][n] || n + "th"} Dan`;
+  // raw steps by 0.2 around the tier (7-- = 6.6); DP keeps the tier as its whole
+  // part and the sublevel as its fraction, which the sublevel bars read.
+  const i = _PRISM_SUB.indexOf(d.variant || "");
+  return { name, sub: _PRISM_SUBLEVELS[i] + (pick.kind ? ` · ${pick.kind}` : ""),
+           dp: Math.round(d.raw - (i - 2) * 0.2) + 0.1 + i * 0.2 };
+}
+function _prismTop(msd) {
+  return Object.keys(_PRISM_LBL).map((k) => [_PRISM_LBL[k], Number(msd && msd[k]) || 0])
+    .filter((x) => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 2).map((x) => x[0]);
+}
+
 function _updateScoringModeBadge() {
   const badge = document.getElementById("scoringModeBadge");
   if (!badge) return;
-  if (_lnOverrideActive) {
+  const pv = _prismPick(_lastAnalysisPayload);
+  if (pv) {
+    badge.textContent = `◈ Mode: Prism${pv.kind ? " " + pv.kind : ""}`;
+    badge.dataset.mode = "reform";
+  } else if (_lnOverrideActive) {
     badge.textContent = "♬ Mode: LN Course";
     badge.dataset.mode = "ln_course";
   } else if (_scoringMode === "celestial") {
@@ -718,10 +760,10 @@ function extractMapSupportInfo(payload) {
 
   if (!isMania) {
     supported = false;
-    reason = `Unsupported mode: ${modeToLabel(modeRaw)}. Please select an osu!mania 4K or 7K map.`;
-  } else if (keyCount != null && keyCount !== 4 && keyCount !== 7) {
+    reason = `Unsupported mode: ${modeToLabel(modeRaw)}. Please select an osu!mania 4K, 6K, 7K or 8K map.`;
+  } else if (keyCount != null && ![4, 6, 7, 8].includes(keyCount)) {
     supported = false;
-    reason = `Unsupported key mode: ${keyCount}K. Please select an osu!mania 4K or 7K map.`;
+    reason = `Unsupported key mode: ${keyCount}K. Please select an osu!mania 4K, 6K, 7K or 8K map.`;
   }
 
   return {
@@ -738,7 +780,7 @@ function applyUnsupportedMapWarning(info) {
   setChartButtonReady(false);
   setAnimatedText(ui.badgeLeft, "WARNING");
   setAnimatedText(ui.badgeCenter, "UNSUPPORTED MAP");
-  setAnimatedText(ui.badgeRight, "MANIA 4K ONLY");
+  setAnimatedText(ui.badgeRight, "MANIA 4K-8K ONLY");
 
   setAnimatedText(ui.danName, "---");
   setAnimatedText(ui.danSub, info.keyCount != null ? `${info.keyCount}K` : info.modeLabel);
@@ -749,7 +791,7 @@ function applyUnsupportedMapWarning(info) {
 
   // Update compact-bar left column with the warning message
   if (ui.mapTitle) ui.mapTitle.textContent = `${info.modeLabel}${info.keyCount != null ? ` ${info.keyCount}K` : ""} — Unsupported`;
-  if (ui.mapArtist) ui.mapArtist.textContent = "Please select an osu!mania 4K or 7K map";
+  if (ui.mapArtist) ui.mapArtist.textContent = "Please select an osu!mania 4K, 6K, 7K or 8K map";
 
   if (ui.progressWrap) {
     ui.progressWrap.classList.remove("showing", "paused", "finished");
@@ -1268,6 +1310,31 @@ function _renderAnalysisPayload(payload) {
   const celestial = payload.celestial;
   const _signicialRaw = payload.signicial;
   const _shoegazerRaw = payload.shoegazer;
+
+  const _pv = _prismPick(payload);
+  if (_pv) {
+    const h = _prismHeadline(_pv);
+    const tm = _pv.t.msd || {};
+    const top = _prismTop(tm);
+    const metrics = [[tm.Overall, "MSD"], [tm.LN, "LN"]].filter((m) => Number(m[0]) > 0);
+    lastDanRaw = "Prism: " + h.name;
+    applyDanResult({
+      danName: h.name,
+      danShort: h.name.substring(0, 3).toUpperCase(),
+      dp: h.dp,
+      danSuffix: h.sub,
+      metrics: metrics.length ? metrics.map((m) => Number(m[0]).toFixed(2)).join(" · ") : "--.-",
+      chart: top.length ? top.join(" · ") : `${_pv.t.key_count}K`,
+      chartColor: _PRISM_FAMILY[top[0]] || "HYBRID",
+      mode7k: true,
+      tier7k: h.name,
+    });
+    const unit = metrics.length ? metrics.map((m) => m[1]).join(" · ") : "MSD";
+    document.querySelectorAll(".msd-unit").forEach((e) => { e.textContent = unit; });
+    setChartButtonReady(true);
+    if (ui.density) { ui.density.innerHTML = ""; ui.density.classList.remove("has-data"); }
+    return;
+  }
 
   if (payload.mode === "7k" && payload.tier_7k) {
       const tDp = Number(payload.dp_7k || 0);
@@ -2193,21 +2260,24 @@ function applyResult(payload) {
       // mode so the display matches what is actually being scored.
       const lnRoute = String(payload.ln_route || "rice");
       const wasLn = _lnOverrideActive;
-      _lnOverrideActive = (lnRoute === "ln" && payload.ln_course != null);
+      _lnOverrideActive = (lnRoute === "ln" && payload.ln_course != null) || _prismIsLnMap(payload);
+      _lastAnalysisPayload = payload;
+      _updateScoringModeBadge(); // Prism badge depends on the payload, not just the LN flip
       if (_lnOverrideActive !== wasLn) {
-        _updateScoringModeBadge();
-        if (_lnOverrideActive) {
+        if (payload.prism) {
+          if (_prismPick(payload)) showModeAnnounce(_lnOverrideActive ? "Prism LN" : "Prism", "reform");
+        } else if (_lnOverrideActive) {
           showModeAnnounce(_lnModePinned ? "LN Course \u25C8" : "LN Course", "ln_course");
         } else {
           // Reverted to rice mode — announce the user's preferred mode
           const restoreName = _scoringMode === "celestial" ? "Celestial"
             : _scoringMode === "signicial" ? "Signicial"
               : _scoringMode === "shoegazer" ? "Shoegazer"
+                : _scoringMode === "prism" ? "Prism"
                 : "Reform";
           showModeAnnounce(restoreName, _scoringMode);
         }
       }
-      _lastAnalysisPayload = payload;
       _renderAnalysisPayload(payload);
       setChartButtonReady(true);
       // ── Density graph (ui-3 skin) ───────────────────────────────────
@@ -2317,6 +2387,16 @@ async function fetchDanAnalysis() {
       applyResult({ type: "state", state: "idle", message: String(out.error) });
       return;
     }
+    // 6K-8K (and 7K's alternate view): Mania Tracker dan-calc + Prism MSD.
+    if (out.tier_7k != null || out.mode === "prism") {
+      // 5s wait for the 1.7MB wasm on first load; later calls are instant.
+      for (let i = 0; i < 80 && !(window.__DANCALC && window.__DANCALC.ready); i++) await new Promise((r) => setTimeout(r, 60));
+      out.prism = window.__DANCALC ? window.__DANCALC.estimate(txt, _MOD_RATE[_curMod] || 1) : null;
+      if (out.mode === "prism" && !out.prism) {
+        applyResult({ type: "state", state: "error", message: "Prism unavailable (engine/dancalc.wasm)" });
+        return;
+      }
+    }
     applyResult({ type: "analysis", ...out });
   } catch (err) {
     applyResult({
@@ -2338,7 +2418,7 @@ function connect() {
 
   ws.addEventListener("open", () => {
     _tosuConnected = true;
-    if (introStage === "splash" || introStage === "tutorial_prompt" ||
+    if (introStage === "splash" ||
       introStage === "whats_new" || introStage === "hint" || introStage === "hint2" ||
       introStage === "hint3" || introStage === "hint4" || introStage === "hint_settings" || introStage === "hint_settings") {
       _wsOpenedEarly = true;              // intro screens will skip connecting on exit
@@ -2390,7 +2470,7 @@ function connect() {
       scheduleReconnect();
     } else if (introStage === "hint" || introStage === "hint2" ||
       introStage === "hint3" || introStage === "hint4" || introStage === "hint_settings" ||
-      introStage === "whats_new" || introStage === "tutorial_prompt") {
+      introStage === "whats_new") {
       // WS dropped while intro screen is showing — keep the screen, just retry in background
       scheduleReconnect();
     } else {
@@ -2461,15 +2541,24 @@ document.addEventListener("keydown", async (e) => {
   try {
     // All client-side now — engine emits nps_data, renderExportChart
     // downloads the PNG via canvas.toBlob. No python bridge.
+    const pv = _prismPick(p);
+    const ph = pv && _prismHeadline(pv);
+    const tm = pv && (pv.t.msd || {});
     renderExportChart({
       type: "render_export_chart",
       nps_data: p.nps_data,
       density_meta: p.density_meta || {},
       dominant_nps: p.dominant_nps || 0,
-      overall_msd: p.overall_msd || 0,
-      dan_short: p.dan_short || "",
-      family: p.family || "",
+      overall_msd: (pv ? tm.Overall : p.overall_msd) || 0,
+      dan_short: pv ? (pv.d ? ph.name : "") : (p.dan_short || ""),
+      dan_sublevel: pv ? ph.sub : "",
+      family: pv ? (_prismTop(tm)[0] || "") : (p.family || ""),
       skillsets: p.skillsets || {},
+      skill_rows: pv ? Object.keys(_PRISM_LBL).filter((k) => k !== "LN" || tm.LN > 0)
+        .map((k) => ({ l: _PRISM_LBL[k][0] + _PRISM_LBL[k].slice(1).toLowerCase(), v: Number(tm[k]) || 0 })) : null,
+      key_count: pv ? pv.t.key_count : (p.mode === "7k" ? 7 : 4),
+      rate_label: _curMod !== "NM" ? `${_curMod} ${_MOD_RATE[_curMod]}x` : "",
+      bg_image: "http://localhost:24050/files/beatmap/background", // same origin: canvas stays untainted
       parsed_meta: {
         bpm: p.bpm || 0, od: p.od || 0,
         artist: p.artist || "", title: p.title || "", version: p.version || "",
@@ -2488,7 +2577,7 @@ document.addEventListener("keydown", async (e) => {
 });
 /* ── Intro sequence state machine ───────────────────────────────── */
 
-let introStage = "connecting"; // "connecting" | "connected" | "splash" | "whats_new" | "hint" | "hint2" | "hint3" | "hint4" | "hint_settings" | "tutorial_prompt" | "done"
+let introStage = "connecting"; // "connecting" | "connected" | "splash" | "whats_new" | "hint" | "hint2" | "hint3" | "hint4" | "hint_settings" | "done"
 let _wsOpenedEarly = false;    // WS connected while still in splash
 
 const _SPLASH_EXIT_MS = 3500;  // fade-out starts this many ms after boot
@@ -2598,10 +2687,6 @@ function _showConnected() {
 
 function setIntroStage(stage) {
   // If leaving an intro-only stage forcibly (e.g. WS drops), hide it immediately.
-  if (introStage === "tutorial_prompt" && stage !== "tutorial_prompt") {
-    const tutEl = document.getElementById("tutorialPromptScreen");
-    if (tutEl) { tutEl.classList.add("hidden"); tutEl.classList.remove("fading"); }
-  }
   if (introStage === "whats_new" && stage !== "whats_new") {
     if (whatsNewEl) { whatsNewEl.classList.add("hidden"); whatsNewEl.classList.remove("fading"); }
   }
@@ -2625,48 +2710,8 @@ function setIntroStage(stage) {
 
   switch (stage) {
     case "splash": {
-      // Splash screen was removed. Advance to tutorial_prompt immediately.
-      setIntroStage("tutorial_prompt");
-      break;
-    }
-
-    case "tutorial_prompt": {
-      const tutPromptEl = document.getElementById("tutorialPromptScreen");
-      if (!tutPromptEl) { setIntroStage("whats_new"); break; }
-
-      // Increment how many times this prompt has been shown
-      const tutCount = parseInt(localStorage.getItem("danOverlay_tutCount") || "0", 10);
-      localStorage.setItem("danOverlay_tutCount", String(tutCount + 1));
-
-      tutPromptEl.classList.remove("hidden", "fading");
-
-      const yesBtn = document.getElementById("tutYesBtn");
-      const noBtn = document.getElementById("tutNoBtn");
-      const neverBtn = document.getElementById("tutNeverBtn");
-
-      function _hideTutPrompt(nextStage) {
-        if (introStage !== "tutorial_prompt") return;
-        if (yesBtn) yesBtn.removeEventListener("click", _onYes);
-        if (noBtn) noBtn.removeEventListener("click", _onNo);
-        if (neverBtn) neverBtn.removeEventListener("click", _onNever);
-        tutPromptEl.classList.add("fading");
-        setTimeout(() => {
-          tutPromptEl.classList.add("hidden");
-          setIntroStage(nextStage);
-        }, _HINT_FADE_MS);
-      }
-
-      function _onYes() { _hideTutPrompt("whats_new"); }
-      function _onNo() { _hideTutPrompt("hint_settings"); }
-      function _onNever() {
-        _settings.neverShowTutorial = true;
-        void _saveSettings();
-        _hideTutPrompt("done");
-      }
-
-      if (yesBtn) yesBtn.addEventListener("click", _onYes);
-      if (noBtn) noBtn.addEventListener("click", _onNo);
-      if (neverBtn) neverBtn.addEventListener("click", _onNever);
+      // Splash and first-launch tutorial prompt were removed.
+      setIntroStage("done");
       break;
     }
 
@@ -2767,10 +2812,7 @@ function setIntroStage(stage) {
         setTimeout(() => {
           if (introStage !== "connected") return;
           if (connectEl) connectEl.classList.add("hidden");
-          // Show tutorial prompt for first-timers unless they opted out.
-          const tutCount = parseInt(localStorage.getItem("danOverlay_tutCount") || "0", 10);
-          const showTut = !_settings.neverShowTutorial && tutCount < 2;
-          setIntroStage(showTut ? "tutorial_prompt" : "done");
+          setIntroStage("done"); // tutorial is opt-in from Settings → Help
         }, 600);
       }, _CONNECTED_HOLD);
       break;
@@ -3135,6 +3177,7 @@ document.addEventListener("keydown", (e) => {
     const restoreName = _scoringMode === "celestial" ? "Celestial"
       : _scoringMode === "signicial" ? "Signicial"
         : _scoringMode === "shoegazer" ? "Shoegazer"
+          : _scoringMode === "prism" ? "Prism"
           : "Reform";
     showModeAnnounce(restoreName, _scoringMode);
   } else {
@@ -3142,8 +3185,23 @@ document.addEventListener("keydown", (e) => {
     _lnModePinned = true;
     _lnOverrideActive = true;
     _updateScoringModeBadge();
-    showModeAnnounce("LN Course \u25C8", "ln_course");
+    if (_prismPick(_lastAnalysisPayload)) showModeAnnounce("Prism LN", "reform");
+    else showModeAnnounce("LN Course \u25C8", "ln_course");
   }
+  if (_lastAnalysisPayload) _renderAnalysisPayload(_lastAnalysisPayload);
+});
+
+// Ctrl+6 \u2014 Prism (Mania Tracker dan-calc). 7K's alternate ruler; 6K/8K always
+// use it, 4K has none and shows Reform.
+document.addEventListener("keydown", (e) => {
+  if (_cfgIsOpen()) return;
+  if (!isKeybind("mode_prism", e)) return;
+  e.preventDefault();
+  _scoringMode = "prism";
+  _lnModePinned = false;
+  _lnOverrideActive = _prismIsLnMap(_lastAnalysisPayload);
+  _updateScoringModeBadge();
+  showModeAnnounce("Prism", "reform");
   if (_lastAnalysisPayload) _renderAnalysisPayload(_lastAnalysisPayload);
 });
 
